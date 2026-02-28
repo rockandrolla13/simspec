@@ -1,6 +1,9 @@
 """Tests for realistic distribution diagnostics."""
 import pytest
-from rfq_simulator.output.realistic_diagnostics import DiagnosticResult
+import numpy as np
+from rfq_simulator.config import SimConfig, ArrivalConfig
+from rfq_simulator.simulation import run_simulation
+from rfq_simulator.output.realistic_diagnostics import DiagnosticResult, HawkesDiagnostics
 
 
 class TestDiagnosticResult:
@@ -28,3 +31,35 @@ class TestDiagnosticResult:
         )
         assert result.passed is False
         assert len(result.warnings) == 2
+
+
+class TestHawkesDiagnostics:
+    @pytest.fixture
+    def hawkes_result(self):
+        cfg = SimConfig(
+            T_days=30,
+            seed=42,
+            arrivals=ArrivalConfig(use_hawkes=True, hawkes_alpha=0.4, hawkes_beta=0.8),
+        )
+        return run_simulation(cfg)
+
+    def test_hawkes_diagnostics_creation(self, hawkes_result):
+        diag = HawkesDiagnostics(hawkes_result)
+        assert diag is not None
+
+    def test_hawkes_analyze_returns_result(self, hawkes_result):
+        diag = HawkesDiagnostics(hawkes_result)
+        result = diag.analyze()
+        assert isinstance(result, DiagnosticResult)
+        assert result.name == "Hawkes Arrivals"
+
+    def test_hawkes_stats_include_acf(self, hawkes_result):
+        diag = HawkesDiagnostics(hawkes_result)
+        result = diag.analyze()
+        assert "acf_lag1" in result.stats
+        assert "ljung_box_p" in result.stats
+
+    def test_hawkes_narrative_not_empty(self, hawkes_result):
+        diag = HawkesDiagnostics(hawkes_result)
+        result = diag.analyze()
+        assert len(result.narrative) > 0
