@@ -3,7 +3,7 @@ import pytest
 import numpy as np
 from rfq_simulator.config import SimConfig, ArrivalConfig, SpreadConfig, ImbalanceConfig
 from rfq_simulator.simulation import run_simulation
-from rfq_simulator.output.realistic_diagnostics import DiagnosticResult, HawkesDiagnostics, SpreadDiagnostics, ImbalanceDiagnostics, ValidationReport
+from rfq_simulator.output.realistic_diagnostics import DiagnosticResult, HawkesDiagnostics, SpreadDiagnostics, ImbalanceDiagnostics, StreetLeanDiagnostics, ValidationReport
 
 
 class TestDiagnosticResult:
@@ -149,6 +149,39 @@ class TestImbalanceDiagnostics:
         result = diag.analyze()
         # Stressed should have lower buy fraction (sell bias)
         assert result.stats["buy_frac_stressed"] < result.stats["buy_frac_calm"]
+
+
+class TestStreetLeanDiagnostics:
+    @pytest.fixture
+    def sim_result(self):
+        cfg = SimConfig(
+            T_days=30,
+            seed=42,
+            street_lean_vol_bps=3.0,
+        )
+        return run_simulation(cfg)
+
+    def test_street_lean_diagnostics_creation(self, sim_result):
+        diag = StreetLeanDiagnostics(sim_result)
+        assert diag is not None
+
+    def test_street_lean_analyze_returns_result(self, sim_result):
+        diag = StreetLeanDiagnostics(sim_result)
+        result = diag.analyze()
+        assert isinstance(result, DiagnosticResult)
+        assert result.name == "Street Lean"
+
+    def test_street_lean_stats_include_volatility(self, sim_result):
+        diag = StreetLeanDiagnostics(sim_result)
+        result = diag.analyze()
+        assert "observed_vol" in result.stats
+        assert "configured_vol" in result.stats
+        assert "mean_reversion_half_life" in result.stats
+
+    def test_street_lean_generates_plots(self, sim_result):
+        diag = StreetLeanDiagnostics(sim_result)
+        result = diag.analyze(generate_plots=True)
+        assert len(result.figures) >= 2
 
 
 class TestValidationReport:

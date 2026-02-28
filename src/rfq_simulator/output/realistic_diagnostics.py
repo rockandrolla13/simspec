@@ -599,6 +599,187 @@ class ImbalanceDiagnostics:
         )
 
 
+class StreetLeanDiagnostics:
+    """Diagnostic analysis for street lean OU process."""
+
+    def __init__(self, result):
+        self.result = result
+        self.cfg = result.cfg
+        self._street_lean_path = result.street_lean_path
+
+    def _compute_realized_vol(self) -> float:
+        """Compute realized volatility of street lean path."""
+        if self._street_lean_path is None or len(self._street_lean_path) < 2:
+            return 0.0
+        returns = np.diff(self._street_lean_path)
+        # Annualize: multiply by sqrt(steps_per_day)
+        steps_per_day = self.cfg.minutes_per_day / self.cfg.dt_minutes
+        return float(np.std(returns) * np.sqrt(steps_per_day))
+
+    def _compute_mean_reversion_rate(self) -> float:
+        """Estimate mean reversion rate from autocorrelation."""
+        if self._street_lean_path is None or len(self._street_lean_path) < 100:
+            return self.cfg.street_lean_mean_rev
+
+        # For OU: ACF(1) ≈ exp(-θ * dt)
+        # So θ ≈ -log(ACF(1)) / dt
+        try:
+            from statsmodels.tsa.stattools import acf
+            acf_vals = acf(self._street_lean_path, nlags=1)
+            acf1 = acf_vals[1]
+            if acf1 > 0:
+                dt = self.cfg.dt_minutes / self.cfg.minutes_per_day
+                theta_est = -np.log(acf1) / dt
+                return float(theta_est)
+        except Exception:
+            pass
+        return self.cfg.street_lean_mean_rev
+
+    def _compute_half_life(self, theta: float) -> float:
+        """Compute half-life of mean reversion in days."""
+        if theta <= 0:
+            return np.inf
+        return np.log(2) / theta
+
+    def _generate_plots(self) -> list:
+        """Generate street lean diagnostic plots."""
+        import matplotlib.pyplot as plt
+        plt.switch_backend('Agg')
+
+        figures = []
+
+        if self._street_lean_path is None:
+            return figures
+
+        # Convert steps to days
+        steps_per_day = self.cfg.minutes_per_day / self.cfg.dt_minutes
+        days = np.arange(len(self._street_lean_path)) / steps_per_day
+
+        # Plot 1: Street lean time series
+        fig, ax = plt.subplots(figsize=(12, 4))
+        ax.plot(days, self._street_lean_path, alpha=0.8, linewidth=0.5)
+        ax.axhline(self.cfg.street_lean_eq, color='k', linestyle='--',
+                   alpha=0.5, label=f'Equilibrium ({self.cfg.street_lean_eq})')
+        ax.fill_between(days, self._street_lean_path, self.cfg.street_lean_eq,
+                        where=self._street_lean_path > self.cfg.street_lean_eq,
+                        alpha=0.3, color='green', label='Long')
+        ax.fill_between(days, self._street_lean_path, self.cfg.street_lean_eq,
+                        where=self._street_lean_path < self.cfg.street_lean_eq,
+                        alpha=0.3, color='red', label='Short')
+        ax.set_xlabel('Days')
+        ax.set_ylabel('Street Lean (bps)')
+        ax.set_title('Street Lean Path (OU Process)')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        figures.append(fig)
+
+        # Plot 2: Distribution with equilibrium
+        fig, ax = plt.subplots(figsize=(6, 5))
+        ax.hist(self._street_lean_path, bins=50, density=True, alpha=0.7, label='Observed')
+        ax.axvline(self.cfg.street_lean_eq, color='k', linestyle='--',
+                   label=f'Equilibrium ({self.cfg.street_lean_eq})')
+        ax.axvline(np.mean(self._street_lean_path), color='blue', linestyle='-',
+                   label=f'Mean ({np.mean(self._street_lean_path):.2f})')
+        ax.set_xlabel('Street Lean (bps)')
+        ax.set_ylabel('Density')
+        ax.set_title('Street Lean Distribution')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        figures.append(fig)
+
+        # Plot 3: ACF showing mean reversion
+        fig, ax = plt.subplots(figsize=(8, 4))
+        try:
+            from statsmodels.tsa.stattools import acf
+            # Subsample for speed
+            subsample = self._street_lean_path[::10] if len(self._street_lean_path) > 1000 else self._street_lean_path
+            acf_vals = acf(subsample, nlags=50)
+            lags = np.arange(len(acf_vals))
+            ax.bar(lags, acf_vals, alpha=0.7)
+            # Theoretical OU ACF
+            dt_sub = 10 * self.cfg.dt_minutes / self.cfg.minutes_per_day
+            theoretical = np.exp(-self.cfg.street_lean_mean_rev * lags * dt_sub)
+            ax.plot(lags, theoretical, 'r-', lw=2, label=f'Theoretical (θ={self.cfg.street_lean_mean_rev})')
+            ax.set_xlabel('Lag')
+            ax.set_ylabel('ACF')
+            ax.set_title('Autocorrelation (Mean Reversion Signature)')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+        except Exception:
+            ax.text(0.5, 0.5, 'ACF computation failed', ha='center', va='center', transform=ax.transAxes)
+        plt.tight_layout()
+        figures.append(fig)
+
+        return figures
+
+    def analyze(self, generate_plots: bool = False) -> DiagnosticResult:
+        """Run full street lean diagnostic analysis."""
+        stats = {}
+        warnings = []
+
+        # Volatility comparison
+        stats["configured_vol"] = self.cfg.street_lean_vol_bps
+        stats["observed_vol"] = self._compute_realized_vol()
+        stats["vol_ratio"] = stats["observed_vol"] / stats["configured_vol"] if stats["configured_vol"] > 0 else 1.0
+
+        # Mean reversion
+        stats["configured_theta"] = self.cfg.street_lean_mean_rev
+        stats["estimated_theta"] = self._compute_mean_reversion_rate()
+        stats["mean_reversion_half_life"] = self._compute_half_life(stats["estimated_theta"])
+
+        # Distribution stats
+        if self._street_lean_path is not None and len(self._street_lean_path) > 0:
+            stats["mean"] = float(np.mean(self._street_lean_path))
+            stats["std"] = float(np.std(self._street_lean_path))
+            stats["min"] = float(np.min(self._street_lean_path))
+            stats["max"] = float(np.max(self._street_lean_path))
+            stats["equilibrium"] = self.cfg.street_lean_eq
+
+        # Warnings
+        if abs(stats["vol_ratio"] - 1.0) > 0.3:
+            warnings.append(
+                f"Realized vol ({stats['observed_vol']:.2f}) differs from configured ({stats['configured_vol']:.2f})"
+            )
+
+        if abs(stats["mean"] - self.cfg.street_lean_eq) > stats["std"]:
+            warnings.append(
+                f"Mean ({stats['mean']:.2f}) far from equilibrium ({self.cfg.street_lean_eq})"
+            )
+
+        # Narrative
+        narrative = format_narrative(
+            "{icon} Street lean follows OU dynamics. "
+            "Realized vol: {vol:.2f} bps (configured: {cfg_vol:.1f}). "
+            "Half-life: {hl:.1f} days. Range: [{min:.1f}, {max:.1f}] bps.",
+            icon=success_icon() if len(warnings) == 0 else warning_icon(),
+            vol=stats["observed_vol"],
+            cfg_vol=stats["configured_vol"],
+            hl=stats["mean_reversion_half_life"],
+            min=stats.get("min", 0),
+            max=stats.get("max", 0),
+        )
+
+        passed = len(warnings) == 0
+
+        figures = []
+        if generate_plots:
+            try:
+                figures = self._generate_plots()
+            except Exception as e:
+                warnings.append(f"Plot generation failed: {e}")
+
+        return DiagnosticResult(
+            name="Street Lean",
+            passed=passed,
+            stats=stats,
+            figures=figures,
+            narrative=narrative,
+            warnings=warnings,
+        )
+
+
 class ValidationReport:
     """Aggregates all realistic distribution diagnostics."""
 
