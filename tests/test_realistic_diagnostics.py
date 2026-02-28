@@ -1,9 +1,9 @@
 """Tests for realistic distribution diagnostics."""
 import pytest
 import numpy as np
-from rfq_simulator.config import SimConfig, ArrivalConfig, SpreadConfig
+from rfq_simulator.config import SimConfig, ArrivalConfig, SpreadConfig, ImbalanceConfig
 from rfq_simulator.simulation import run_simulation
-from rfq_simulator.output.realistic_diagnostics import DiagnosticResult, HawkesDiagnostics, SpreadDiagnostics
+from rfq_simulator.output.realistic_diagnostics import DiagnosticResult, HawkesDiagnostics, SpreadDiagnostics, ImbalanceDiagnostics
 
 
 class TestDiagnosticResult:
@@ -115,3 +115,37 @@ class TestSpreadDiagnostics:
         assert result.stats["stressed_median"] > result.stats["calm_median"]
         # Verify regime ratio is significant (config has mu_stressed=3.2 vs mu_calm=2.0)
         assert result.stats["regime_ratio"] > 2.0
+
+
+class TestImbalanceDiagnostics:
+    @pytest.fixture
+    def imbalance_result(self):
+        cfg = SimConfig(
+            T_days=30,
+            seed=42,
+            imbalance=ImbalanceConfig(use_ar1=True, rho=0.4, mu_stressed=-0.25),
+        )
+        return run_simulation(cfg)
+
+    def test_imbalance_diagnostics_creation(self, imbalance_result):
+        diag = ImbalanceDiagnostics(imbalance_result)
+        assert diag is not None
+
+    def test_imbalance_analyze_returns_result(self, imbalance_result):
+        diag = ImbalanceDiagnostics(imbalance_result)
+        result = diag.analyze()
+        assert isinstance(result, DiagnosticResult)
+        assert result.name == "AR(1) Imbalance"
+
+    def test_imbalance_stats_include_acf(self, imbalance_result):
+        diag = ImbalanceDiagnostics(imbalance_result)
+        result = diag.analyze()
+        assert "direction_acf1" in result.stats
+        assert "buy_frac_calm" in result.stats
+        assert "buy_frac_stressed" in result.stats
+
+    def test_imbalance_regime_bias(self, imbalance_result):
+        diag = ImbalanceDiagnostics(imbalance_result)
+        result = diag.analyze()
+        # Stressed should have lower buy fraction (sell bias)
+        assert result.stats["buy_frac_stressed"] < result.stats["buy_frac_calm"]

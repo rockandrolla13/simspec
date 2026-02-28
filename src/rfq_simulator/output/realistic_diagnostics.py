@@ -10,6 +10,9 @@ from typing import Dict, List, Any, Optional
 
 import numpy as np
 
+# Type alias for typing clarity
+DirectionData = Dict[str, Any]
+
 from .narrative import format_narrative, format_warning, success_icon, warning_icon
 
 
@@ -437,6 +440,157 @@ class SpreadDiagnostics:
 
         return DiagnosticResult(
             name="LogNormal Spreads",
+            passed=passed,
+            stats=stats,
+            figures=figures,
+            narrative=narrative,
+            warnings=warnings,
+        )
+
+
+class ImbalanceDiagnostics:
+    """Diagnostic analysis for AR(1) buy/sell imbalance."""
+
+    def __init__(self, result):
+        self.result = result
+        self.cfg = result.cfg
+
+    def _extract_directions_by_regime(self) -> DirectionData:
+        """Extract buy/sell directions grouped by regime."""
+        calm_buys = 0
+        calm_total = 0
+        stressed_buys = 0
+        stressed_total = 0
+
+        directions = []  # For ACF calculation
+
+        rfq_log = self.result.final_state.rfq_log
+        for r in rfq_log:
+            is_buy = 1 if r.is_client_buy else 0
+            directions.append(is_buy)
+
+            if r.regime.value == 0:  # CALM
+                calm_buys += is_buy
+                calm_total += 1
+            else:
+                stressed_buys += is_buy
+                stressed_total += 1
+
+        return {
+            "directions": np.array(directions),
+            "calm_buy_frac": calm_buys / calm_total if calm_total > 0 else 0.5,
+            "stressed_buy_frac": stressed_buys / stressed_total if stressed_total > 0 else 0.5,
+            "calm_total": calm_total,
+            "stressed_total": stressed_total,
+        }
+
+    def _compute_direction_acf(self, directions: np.ndarray, lag: int = 1) -> float:
+        """Compute ACF of direction sequence."""
+        if len(directions) < lag + 10:
+            return 0.0
+        try:
+            from statsmodels.tsa.stattools import acf
+            return float(acf(directions, nlags=lag)[lag])
+        except Exception:
+            # Manual ACF
+            n = len(directions)
+            mean = np.mean(directions)
+            var = np.var(directions)
+            if var == 0:
+                return 0.0
+            cov = np.mean((directions[:-lag] - mean) * (directions[lag:] - mean))
+            return cov / var
+
+    def _generate_plots(self, data: DirectionData) -> list:
+        """Generate imbalance diagnostic plots."""
+        import matplotlib.pyplot as plt
+        plt.switch_backend('Agg')
+
+        figures = []
+
+        # 1. Rolling buy fraction
+        fig, ax = plt.subplots(figsize=(10, 4))
+        window = 50
+        directions = data["directions"]
+        if len(directions) > window:
+            rolling = np.convolve(directions, np.ones(window)/window, mode='valid')
+            ax.plot(rolling, alpha=0.7)
+            ax.axhline(0.5, color='k', linestyle='--', alpha=0.5, label='Balanced')
+        ax.set_xlabel('RFQ Index')
+        ax.set_ylabel('Rolling Buy Fraction')
+        ax.set_title(f'Rolling Buy Fraction ({window}-RFQ window)')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        figures.append(fig)
+
+        # 2. Regime bar chart
+        fig, ax = plt.subplots(figsize=(6, 5))
+        ax.bar(['Calm', 'Stressed'],
+               [data["calm_buy_frac"], data["stressed_buy_frac"]],
+               color=['steelblue', 'indianred'])
+        ax.axhline(0.5, color='k', linestyle='--', alpha=0.5)
+        ax.set_ylabel('Buy Fraction')
+        ax.set_title('Buy Fraction by Regime')
+        ax.set_ylim(0, 1)
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        figures.append(fig)
+
+        return figures
+
+    def analyze(self, generate_plots: bool = False) -> DiagnosticResult:
+        """Run full imbalance diagnostic analysis."""
+        stats = {}
+        warnings = []
+
+        data = self._extract_directions_by_regime()
+
+        # Buy fractions
+        stats["buy_frac_calm"] = data["calm_buy_frac"]
+        stats["buy_frac_stressed"] = data["stressed_buy_frac"]
+        stats["buy_frac_diff"] = data["calm_buy_frac"] - data["stressed_buy_frac"]
+
+        # ACF
+        stats["direction_acf1"] = self._compute_direction_acf(data["directions"], 1)
+        stats["direction_acf5"] = self._compute_direction_acf(data["directions"], 5)
+
+        # Config reference
+        stats["cfg_rho"] = self.cfg.imbalance.rho
+        stats["cfg_mu_stressed"] = self.cfg.imbalance.mu_stressed
+
+        # Warnings
+        if abs(stats["direction_acf1"] - self.cfg.imbalance.rho) > 0.15:
+            warnings.append(
+                f"ACF(1)={stats['direction_acf1']:.3f} differs from rho={self.cfg.imbalance.rho:.2f}"
+            )
+
+        if stats["buy_frac_diff"] < 0.02:
+            warnings.append("Regime bias too weak - stressed similar to calm")
+
+        # Narrative
+        narrative = format_narrative(
+            "{icon} Flow shows persistence (ACF(1)={acf:.3f}, expected rho={rho:.2f}). "
+            "Stressed: {stressed:.1%} buys vs calm: {calm:.1%} ({diff:+.1%} difference).",
+            icon=success_icon() if stats["buy_frac_diff"] >= 0.02 else warning_icon(),
+            acf=stats["direction_acf1"],
+            rho=self.cfg.imbalance.rho,
+            stressed=stats["buy_frac_stressed"],
+            calm=stats["buy_frac_calm"],
+            diff=-stats["buy_frac_diff"],
+        )
+
+        passed = stats["buy_frac_diff"] >= 0.02
+
+        figures = []
+        if generate_plots:
+            try:
+                figures = self._generate_plots(data)
+            except ImportError as e:
+                warnings.append(f"matplotlib not available for plots: {e}")
+
+        return DiagnosticResult(
+            name="AR(1) Imbalance",
             passed=passed,
             stats=stats,
             figures=figures,
