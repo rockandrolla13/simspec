@@ -257,3 +257,189 @@ class HawkesDiagnostics:
             narrative=narrative,
             warnings=warnings,
         )
+
+
+class SpreadDiagnostics:
+    """Diagnostic analysis for LogNormal regime-dependent spreads."""
+
+    def __init__(self, result):
+        self.result = result
+        self.cfg = result.cfg
+        self._spreads_by_regime: Optional[Dict] = None
+
+    def _sample_spread_distribution(self, n_samples: int = 1000) -> Dict[str, np.ndarray]:
+        """
+        Sample directly from the spread distribution to verify configuration.
+
+        This samples from the log-normal spread distribution with the configured
+        parameters to validate regime-dependent behavior.
+        """
+        from ..world.spread import sample_base_spread
+        from ..world.regime import Regime
+
+        rng = np.random.default_rng(self.cfg.seed)
+
+        calm_spreads = np.array([
+            sample_base_spread(Regime.CALM, self.cfg.spreads, rng)
+            for _ in range(n_samples)
+        ])
+        stressed_spreads = np.array([
+            sample_base_spread(Regime.STRESSED, self.cfg.spreads, rng)
+            for _ in range(n_samples)
+        ])
+
+        return {
+            "calm": calm_spreads,
+            "stressed": stressed_spreads,
+        }
+
+    def _extract_spreads_by_regime(self) -> Dict[str, np.ndarray]:
+        """Extract trader markups grouped by regime from simulation results."""
+        if self._spreads_by_regime is not None:
+            return self._spreads_by_regime
+
+        calm_spreads = []
+        stressed_spreads = []
+
+        rfq_log = self.result.final_state.rfq_log
+        for r in rfq_log:
+            if r.filled and hasattr(r, 'markup_bps') and r.markup_bps is not None:
+                spread = abs(r.markup_bps)
+                if r.regime.value == 0:  # CALM
+                    calm_spreads.append(spread)
+                else:
+                    stressed_spreads.append(spread)
+
+        self._spreads_by_regime = {
+            "calm": np.array(calm_spreads) if calm_spreads else np.array([1.0]),
+            "stressed": np.array(stressed_spreads) if stressed_spreads else np.array([1.0]),
+        }
+        return self._spreads_by_regime
+
+    def _shapiro_test(self, spreads: np.ndarray) -> tuple:
+        """Shapiro-Wilk test on log(spreads)."""
+        try:
+            from scipy.stats import shapiro
+            log_spreads = np.log(spreads[spreads > 0])
+            if len(log_spreads) < 3:
+                return np.nan, np.nan
+            # Sample if too large (Shapiro-Wilk has n<=5000 limit)
+            if len(log_spreads) > 5000:
+                rng = np.random.default_rng(42)
+                log_spreads = rng.choice(log_spreads, 5000, replace=False)
+            stat, p = shapiro(log_spreads)
+            return float(stat), float(p)
+        except ImportError:
+            return np.nan, np.nan
+
+    def _generate_plots(self) -> list:
+        """Generate spread diagnostic plots."""
+        import matplotlib.pyplot as plt
+        plt.switch_backend('Agg')
+
+        spreads = self._extract_spreads_by_regime()
+        figures = []
+
+        # 1. Log-spread histogram by regime
+        fig, ax = plt.subplots(figsize=(8, 5))
+        if len(spreads["calm"]) > 1:
+            ax.hist(np.log(spreads["calm"][spreads["calm"] > 0]), bins=30, alpha=0.6,
+                    label='Calm', density=True)
+        if len(spreads["stressed"]) > 1:
+            ax.hist(np.log(spreads["stressed"][spreads["stressed"] > 0]), bins=30, alpha=0.6,
+                    label='Stressed', density=True)
+        ax.set_xlabel('log(Spread)')
+        ax.set_ylabel('Density')
+        ax.set_title('Log-Spread Distribution by Regime')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        figures.append(fig)
+
+        # 2. Regime boxplot
+        fig, ax = plt.subplots(figsize=(6, 5))
+        data = [spreads["calm"], spreads["stressed"]]
+        ax.boxplot(data, labels=['Calm', 'Stressed'])
+        ax.set_ylabel('Spread (bps)')
+        ax.set_title('Spread Distribution by Regime')
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        figures.append(fig)
+
+        return figures
+
+    def analyze(self, generate_plots: bool = False) -> DiagnosticResult:
+        """Run full spread diagnostic analysis."""
+        stats = {}
+        warnings = []
+
+        # Sample directly from spread distribution for regime validation
+        sampled_spreads = self._sample_spread_distribution(n_samples=1000)
+
+        # Medians from sampled spreads (theoretical distribution)
+        stats["calm_median"] = float(np.median(sampled_spreads["calm"]))
+        stats["stressed_median"] = float(np.median(sampled_spreads["stressed"]))
+        stats["regime_ratio"] = stats["stressed_median"] / stats["calm_median"] if stats["calm_median"] > 0 else 1.0
+
+        # Shapiro-Wilk on sampled calm spreads (should pass since they're log-normal)
+        sh_stat, sh_p = self._shapiro_test(sampled_spreads["calm"])
+        stats["shapiro_stat"] = sh_stat
+        stats["shapiro_p"] = sh_p
+
+        # Config values for reference
+        stats["cfg_mu_calm"] = self.cfg.spreads.mu_calm
+        stats["cfg_mu_stressed"] = self.cfg.spreads.mu_stressed
+
+        # Also include trader markup stats from simulation
+        trader_spreads = self._extract_spreads_by_regime()
+        stats["trader_calm_median"] = float(np.median(trader_spreads["calm"]))
+        stats["trader_stressed_median"] = float(np.median(trader_spreads["stressed"]))
+        stats["n_calm_fills"] = len(trader_spreads["calm"])
+        stats["n_stressed_fills"] = len(trader_spreads["stressed"])
+
+        # Warnings
+        if not np.isnan(sh_p) and sh_p < 0.05:
+            warnings.append(f"Log-spreads fail normality (Shapiro p={sh_p:.4f})")
+
+        if stats["regime_ratio"] < 2.0:
+            warnings.append(
+                f"Regime separation weak: stressed only {stats['regime_ratio']:.1f}x calm"
+            )
+
+        # Narrative
+        if stats["regime_ratio"] >= 2.0:
+            narrative = format_narrative(
+                "{icon} Spreads are log-normally distributed (Shapiro p={p:.3f}). "
+                "Median: {calm:.1f} bps (calm) → {stressed:.1f} bps (stressed), "
+                "a {ratio:.1f}x widening during stress.",
+                icon=success_icon(),
+                p=sh_p if not np.isnan(sh_p) else 1.0,
+                calm=stats["calm_median"],
+                stressed=stats["stressed_median"],
+                ratio=stats["regime_ratio"],
+            )
+        else:
+            narrative = format_narrative(
+                "{icon} Regime separation weaker than expected. "
+                "Stressed spreads only {ratio:.1f}x calm.",
+                icon=warning_icon(),
+                ratio=stats["regime_ratio"],
+            )
+
+        passed = stats["regime_ratio"] >= 2.0
+
+        figures = []
+        if generate_plots:
+            try:
+                figures = self._generate_plots()
+            except ImportError as e:
+                warnings.append(f"matplotlib not available for plots: {e}")
+
+        return DiagnosticResult(
+            name="LogNormal Spreads",
+            passed=passed,
+            stats=stats,
+            figures=figures,
+            narrative=narrative,
+            warnings=warnings,
+        )

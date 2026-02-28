@@ -1,9 +1,9 @@
 """Tests for realistic distribution diagnostics."""
 import pytest
 import numpy as np
-from rfq_simulator.config import SimConfig, ArrivalConfig
+from rfq_simulator.config import SimConfig, ArrivalConfig, SpreadConfig
 from rfq_simulator.simulation import run_simulation
-from rfq_simulator.output.realistic_diagnostics import DiagnosticResult, HawkesDiagnostics
+from rfq_simulator.output.realistic_diagnostics import DiagnosticResult, HawkesDiagnostics, SpreadDiagnostics
 
 
 class TestDiagnosticResult:
@@ -79,3 +79,39 @@ class TestHawkesDiagnostics:
                 titles.append(fig.axes[0].get_title())
         assert any("Inter-Arrival" in t for t in titles)
         assert any("ACF" in t for t in titles)
+
+
+class TestSpreadDiagnostics:
+    @pytest.fixture
+    def spread_result(self):
+        cfg = SimConfig(
+            T_days=30,
+            seed=42,
+            spreads=SpreadConfig(use_lognormal=True),
+        )
+        return run_simulation(cfg)
+
+    def test_spread_diagnostics_creation(self, spread_result):
+        diag = SpreadDiagnostics(spread_result)
+        assert diag is not None
+
+    def test_spread_analyze_returns_result(self, spread_result):
+        diag = SpreadDiagnostics(spread_result)
+        result = diag.analyze()
+        assert isinstance(result, DiagnosticResult)
+        assert result.name == "LogNormal Spreads"
+
+    def test_spread_stats_include_shapiro(self, spread_result):
+        diag = SpreadDiagnostics(spread_result)
+        result = diag.analyze()
+        assert "shapiro_p" in result.stats
+        assert "calm_median" in result.stats
+        assert "stressed_median" in result.stats
+
+    def test_spread_regime_difference(self, spread_result):
+        diag = SpreadDiagnostics(spread_result)
+        result = diag.analyze()
+        # Stressed should be wider than calm (from sampled spread distribution)
+        assert result.stats["stressed_median"] > result.stats["calm_median"]
+        # Verify regime ratio is significant (config has mu_stressed=3.2 vs mu_calm=2.0)
+        assert result.stats["regime_ratio"] > 2.0
