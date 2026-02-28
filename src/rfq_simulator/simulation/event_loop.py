@@ -140,8 +140,8 @@ def run_simulation(
     # Regime path
     regime_path = generate_regime_path(cfg, rng)
 
-    # RFQ stream
-    rfq_events = generate_rfq_stream(cfg, rfq_rng)
+    # RFQ stream (pass regime_path for regime-dependent arrival rates)
+    rfq_events = generate_rfq_stream(cfg, rfq_rng, regime_path=regime_path)
 
     # Street lean (OU process)
     street_lean_rng = np.random.default_rng(rng.integers(2**32))
@@ -328,6 +328,9 @@ def run_simulation(
         # Simulate competition
         # ---------------------------------------------------------------------
 
+        # Get current regime for regime-dependent competition
+        current_regime = get_regime_at_day(regime_path, current_day)
+
         competition = simulate_competition(
             rfq=rfq,
             p_true=p_true,
@@ -335,6 +338,7 @@ def run_simulation(
             dealer_pool=dealer_pool,
             street_lean=street_lean,
             rng=competitor_rng,
+            regime=current_regime,
         )
 
         # ---------------------------------------------------------------------

@@ -9,6 +9,39 @@ from typing import List
 
 
 @dataclass
+class ArrivalConfig:
+    """RFQ arrival process configuration."""
+    use_hawkes: bool = False
+    hawkes_alpha: float = 0.4        # Excitation magnitude
+    hawkes_beta: float = 0.8         # Decay rate (α/β < 1 required)
+    hawkes_reset_daily: bool = True
+    # Note: intraday_seasonality already exists in SimConfig
+
+
+@dataclass
+class SpreadConfig:
+    """Spread distribution configuration."""
+    use_lognormal: bool = False
+    mu_calm: float = 2.0             # ~7 bps median
+    sigma_calm: float = 0.5
+    mu_stressed: float = 3.2         # ~25 bps median
+    sigma_stressed: float = 0.8
+    size_gamma: float = 0.15         # Size impact coefficient
+
+
+@dataclass
+class ImbalanceConfig:
+    """Buy/sell imbalance configuration."""
+    use_ar1: bool = False
+    rho: float = 0.4                 # AR(1) persistence
+    sigma: float = 0.3               # Innovation volatility
+    mu_calm: float = 0.0             # Balanced flow
+    mu_stressed: float = -0.25       # Sell bias in stress
+    clip_low: float = 0.2            # Min buy probability
+    clip_high: float = 0.8           # Max buy probability
+
+
+@dataclass
 class SimConfig:
     """
     Complete configuration for the RFQ simulator.
@@ -281,6 +314,13 @@ class SimConfig:
     """Annual coupon in bps of face (5% = 500 bps)."""
 
     # =========================================================================
+    # Nested configs for realistic distributions
+    # =========================================================================
+    arrivals: ArrivalConfig = field(default_factory=ArrivalConfig)
+    spreads: SpreadConfig = field(default_factory=SpreadConfig)
+    imbalance: ImbalanceConfig = field(default_factory=ImbalanceConfig)
+
+    # =========================================================================
     # Derived Properties
     # =========================================================================
     @property
@@ -338,3 +378,9 @@ class SimConfig:
         assert 0 <= self.skew_accuracy <= 1, "skew_accuracy must be in [0, 1]"
         assert self.theta_limit > 0 and self.theta_limit < 1, "theta_limit must be in (0, 1)"
         assert len(self.street_proxy_weights) == 3, "street_proxy_weights must have 3 elements"
+
+        # Hawkes branching ratio must be < 1 for stationarity
+        if self.arrivals.use_hawkes:
+            branching_ratio = self.arrivals.hawkes_alpha / self.arrivals.hawkes_beta
+            if branching_ratio >= 1.0:
+                raise ValueError(f"Hawkes branching ratio α/β = {branching_ratio:.2f} must be < 1")

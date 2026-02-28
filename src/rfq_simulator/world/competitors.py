@@ -23,7 +23,9 @@ import numpy as np
 from numpy.random import Generator
 
 from ..config import SimConfig
+from .regime import Regime
 from .rfq_stream import RFQEvent
+from .spread import sample_dealer_spread
 
 
 @dataclass
@@ -191,6 +193,7 @@ def simulate_dealer_quote(
     street_lean: float,
     cfg: SimConfig,
     rng: Generator,
+    regime: Regime = Regime.CALM,
 ) -> DealerQuote:
     """
     Simulate a single dealer's quote decision and price.
@@ -212,6 +215,7 @@ def simulate_dealer_quote(
         street_lean: Current street lean (in bps)
         cfg: SimConfig
         rng: Random generator
+        regime: Current market regime (default: CALM)
 
     Returns:
         DealerQuote with price and response decision
@@ -224,10 +228,18 @@ def simulate_dealer_quote(
     # Combines street lean (common to all) + dealer's idiosyncratic bias
     effective_bias = street_lean + dealer_bias
 
-    # Compute markup with per-dealer noise
-    base_markup = compute_dealer_markup(rfq, cfg, rng)
-    markup_noise = rng.normal(0.0, cfg.markup_noise_bps)
-    total_markup = base_markup + markup_noise
+    # Compute markup based on configuration
+    if cfg.spreads.use_lognormal:
+        # Log-normal regime-dependent spread
+        spread = sample_dealer_spread(regime, rfq.size, cfg.spreads, rng)
+        # Add per-dealer noise on top of the log-normal spread
+        markup_noise = rng.normal(0.0, cfg.markup_noise_bps)
+        total_markup = spread + markup_noise
+    else:
+        # Legacy normal model
+        base_markup = compute_dealer_markup(rfq, cfg, rng)
+        markup_noise = rng.normal(0.0, cfg.markup_noise_bps)
+        total_markup = base_markup + markup_noise
 
     # Quote noise (execution uncertainty)
     quote_noise = rng.normal(0.0, cfg.quote_noise_bps)
@@ -261,6 +273,7 @@ def simulate_competition(
     dealer_pool: DealerPool,
     street_lean: float,
     rng: Generator,
+    regime: Regime = Regime.CALM,
 ) -> CompetitionResult:
     """
     Simulate the full competition for an RFQ.
@@ -275,6 +288,7 @@ def simulate_competition(
         dealer_pool: DealerPool for getting biases
         street_lean: Current street lean (in bps)
         rng: Random generator
+        regime: Current market regime (default: CALM)
 
     Returns:
         CompetitionResult with full details
@@ -296,6 +310,7 @@ def simulate_competition(
             street_lean=street_lean,
             cfg=cfg,
             rng=rng,
+            regime=regime,
         )
         quotes.append(quote)
 

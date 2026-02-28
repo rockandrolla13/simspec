@@ -10,6 +10,10 @@ Each RFQ has attributes:
     - Size: ceil(exp(μ_s + σ_s * Z)), clipped to [1, size_max]
     - Dealer count: 1 + Poisson(N̄ - 1), clipped to [1, N_max]
     - Toxicity: Beta(a_tox, b_tox)
+
+Optionally supports:
+    - Hawkes self-exciting arrivals (when cfg.arrivals.use_hawkes=True)
+    - AR(1) buy/sell imbalance (when cfg.imbalance.use_ar1=True)
 """
 
 from dataclasses import dataclass
@@ -20,6 +24,9 @@ from numpy.random import Generator
 
 from ..config import SimConfig
 from .clock import TimeGrid
+from .hawkes import generate_hawkes_arrivals
+from .imbalance import ImbalanceProcess
+from .regime import Regime
 
 
 @dataclass
@@ -70,9 +77,63 @@ def compute_intraday_intensity(hour: float, cfg: SimConfig) -> float:
     return 1.0 + open_bump + close_bump
 
 
-def generate_rfq_stream(cfg: SimConfig, rng: Generator) -> List[RFQEvent]:
+def generate_rfq_stream(
+    cfg: SimConfig,
+    rng: Generator,
+    regime_path: np.ndarray | None = None,
+) -> List[RFQEvent]:
     """
     Generate RFQ arrivals via thinning algorithm for inhomogeneous Poisson.
+
+    Uses the thinning method:
+    1. Generate candidates from homogeneous Poisson with rate μ_max
+    2. Accept each candidate with probability f(h) / max_f
+
+    When cfg.arrivals.use_hawkes=True, uses Hawkes self-exciting process.
+    When cfg.imbalance.use_ar1=True and regime_path is provided, uses AR(1)
+    imbalance process for buy/sell direction.
+
+    Args:
+        cfg: SimConfig with all RFQ parameters
+        rng: Random generator
+        regime_path: Optional regime path array for AR(1) imbalance
+
+    Returns:
+        List of RFQEvent sorted by time
+    """
+    # Generate arrival times - dispatch to Hawkes or Poisson
+    if cfg.arrivals.use_hawkes:
+        arrival_times = generate_hawkes_arrivals(cfg, rng)
+    else:
+        arrival_times = _generate_poisson_arrivals(cfg, rng)
+
+    # Initialize imbalance process if enabled
+    imbalance = None
+    if cfg.imbalance.use_ar1 and regime_path is not None:
+        imbalance = ImbalanceProcess(cfg.imbalance, rng)
+
+    # Generate RFQ events
+    events = []
+    for t in arrival_times:
+        if imbalance is not None:
+            day = int(t // cfg.minutes_per_day)
+            day = min(day, len(regime_path) - 1)
+            regime = Regime(regime_path[day])
+            imbalance.set_regime(regime)
+            imbalance.step()
+            is_client_buy = imbalance.sample_direction()
+        else:
+            is_client_buy = rng.random() < (0.5 + cfg.flow_bias)
+
+        event = _generate_rfq_attributes(t, is_client_buy, cfg, rng)
+        events.append(event)
+
+    return events
+
+
+def _generate_poisson_arrivals(cfg: SimConfig, rng: Generator) -> List[float]:
+    """
+    Generate arrival times via thinning algorithm for inhomogeneous Poisson.
 
     Uses the thinning method:
     1. Generate candidates from homogeneous Poisson with rate μ_max
@@ -83,7 +144,7 @@ def generate_rfq_stream(cfg: SimConfig, rng: Generator) -> List[RFQEvent]:
         rng: Random generator
 
     Returns:
-        List of RFQEvent sorted by time
+        List of arrival times in minutes from simulation start
     """
     time_grid = TimeGrid(cfg)
     total_minutes = cfg.total_minutes
@@ -101,7 +162,7 @@ def generate_rfq_stream(cfg: SimConfig, rng: Generator) -> List[RFQEvent]:
     mu_max = mu_base * max_f
 
     # Generate candidates using thinning
-    events = []
+    arrivals = []
     t = 0.0
 
     while t < total_minutes:
@@ -118,28 +179,26 @@ def generate_rfq_stream(cfg: SimConfig, rng: Generator) -> List[RFQEvent]:
 
         # Accept with probability f(t) / max_f
         if rng.random() < f_t / max_f:
-            # Generate RFQ attributes
-            event = _generate_rfq_attributes(t, cfg, rng)
-            events.append(event)
+            arrivals.append(t)
 
-    return events
+    return arrivals
 
 
-def _generate_rfq_attributes(time: float, cfg: SimConfig, rng: Generator) -> RFQEvent:
+def _generate_rfq_attributes(
+    time: float, is_client_buy: bool, cfg: SimConfig, rng: Generator
+) -> RFQEvent:
     """
     Generate attributes for a single RFQ.
 
     Args:
         time: Arrival time in minutes
+        is_client_buy: Whether client is buying (pre-determined by caller)
         cfg: SimConfig
         rng: Random generator
 
     Returns:
         RFQEvent with all attributes
     """
-    # Direction: P(client buy) = 0.5 + δ_flow
-    is_client_buy = rng.random() < (0.5 + cfg.flow_bias)
-
     # Size: ceil(exp(μ_s + σ_s * Z)), clipped to [1, size_max]
     log_size = cfg.size_mu + cfg.size_sigma * rng.standard_normal()
     size = int(np.ceil(np.exp(log_size)))

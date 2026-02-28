@@ -135,3 +135,45 @@ def compute_average_durations(cfg: SimConfig) -> Tuple[float, float]:
     avg_stress = 1.0 / cfg.p_stress_to_calm
 
     return avg_calm, avg_stress
+
+
+class RegimeProcess:
+    """2-state Markov chain implementing StochasticProcess protocol."""
+
+    def __init__(self, cfg: SimConfig, rng: Generator):
+        self._cfg = cfg
+        self._rng = rng
+        # Initialize from stationary distribution
+        pi_stress = cfg.p_calm_to_stress / (cfg.p_calm_to_stress + cfg.p_stress_to_calm)
+        self._regime = Regime.STRESSED if rng.random() < pi_stress else Regime.CALM
+
+    @property
+    def value(self) -> float:
+        """Current regime as float (0=CALM, 1=STRESSED)."""
+        return float(self._regime.value)
+
+    @property
+    def regime(self) -> Regime:
+        """Current regime enum."""
+        return self._regime
+
+    def step(self, dt: float = 1.0) -> float:
+        """Transition to next state (dt is ignored, transitions are daily)."""
+        u = self._rng.random()
+        if self._regime == Regime.CALM:
+            if u < self._cfg.p_calm_to_stress:
+                self._regime = Regime.STRESSED
+        else:
+            if u < self._cfg.p_stress_to_calm:
+                self._regime = Regime.CALM
+        return self.value
+
+    def reset(self, initial_value: float | None = None) -> None:
+        """Reset to specified regime or sample from stationary."""
+        if initial_value is not None:
+            self._regime = Regime(int(initial_value))
+        else:
+            pi_stress = self._cfg.p_calm_to_stress / (
+                self._cfg.p_calm_to_stress + self._cfg.p_stress_to_calm
+            )
+            self._regime = Regime.STRESSED if self._rng.random() < pi_stress else Regime.CALM

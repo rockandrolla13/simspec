@@ -202,3 +202,35 @@ def compute_street_lean_impact(
     else:
         # Bidding side: positive lean = lower prices = negative adjustment
         return -street_lean_bps * 0.5
+
+
+class StreetLeanProcess:
+    """OU process for street lean implementing StochasticProcess protocol."""
+
+    def __init__(self, cfg: SimConfig, rng: Generator):
+        self._cfg = cfg
+        self._rng = rng
+        self._dt = cfg.dt_minutes / cfg.minutes_per_day  # In days
+        self._theta = cfg.street_lean_mean_rev
+        self._sigma = cfg.street_lean_vol_bps
+        self._b_eq = cfg.street_lean_eq
+        # Initialize from equilibrium
+        self._lean = self._b_eq
+
+    @property
+    def value(self) -> float:
+        """Current street lean in bps."""
+        return self._lean
+
+    def step(self, dt: float | None = None) -> float:
+        """Advance the OU process by one time step and return new value."""
+        if dt is None:
+            dt = self._dt
+        drift = self._theta * (self._b_eq - self._lean) * dt
+        diffusion = self._sigma * np.sqrt(dt) * self._rng.standard_normal()
+        self._lean = self._lean + drift + diffusion
+        return self._lean
+
+    def reset(self, initial_value: float | None = None) -> None:
+        """Reset to specified value or equilibrium."""
+        self._lean = initial_value if initial_value is not None else self._b_eq
