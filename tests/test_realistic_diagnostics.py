@@ -63,3 +63,19 @@ class TestHawkesDiagnostics:
         diag = HawkesDiagnostics(hawkes_result)
         result = diag.analyze()
         assert len(result.narrative) > 0
+
+    def test_hawkes_generates_figures(self, hawkes_result):
+        diag = HawkesDiagnostics(hawkes_result)
+        result = diag.analyze(generate_plots=True)
+        assert len(result.figures) == 4  # histogram, ACF, heatmap, QQ
+
+    def test_hawkes_plot_titles(self, hawkes_result):
+        diag = HawkesDiagnostics(hawkes_result)
+        result = diag.analyze(generate_plots=True)
+        # Check that figures have expected titles
+        titles = []
+        for fig in result.figures:
+            if fig.axes:
+                titles.append(fig.axes[0].get_title())
+        assert any("Inter-Arrival" in t for t in titles)
+        assert any("ACF" in t for t in titles)

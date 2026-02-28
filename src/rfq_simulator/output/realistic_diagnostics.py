@@ -83,6 +83,107 @@ class HawkesDiagnostics:
             # Skip test if statsmodels not available or broken
             return np.nan, np.nan
 
+    def _plot_inter_arrival_histogram(self):
+        """Plot histogram of inter-arrival times with exponential fit."""
+        import matplotlib.pyplot as plt
+        from scipy import stats
+
+        inter_arrivals = self._compute_inter_arrivals()
+
+        fig, ax = plt.subplots(figsize=(8, 5))
+
+        # Histogram
+        ax.hist(inter_arrivals, bins=50, density=True, alpha=0.7, label='Observed')
+
+        # Exponential fit
+        rate = 1 / np.mean(inter_arrivals)
+        x = np.linspace(0, np.percentile(inter_arrivals, 99), 100)
+        ax.plot(x, stats.expon.pdf(x, scale=1/rate), 'r-', lw=2,
+                label=f'Exp(λ={rate:.4f})')
+
+        ax.set_xlabel('Inter-Arrival Time (minutes)')
+        ax.set_ylabel('Density')
+        ax.set_title('Inter-Arrival Time Distribution')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        return fig
+
+    def _plot_acf(self, max_lag: int = 20):
+        """Plot autocorrelation function."""
+        import matplotlib.pyplot as plt
+
+        acf_vals = self._compute_acf(max_lag)
+
+        fig, ax = plt.subplots(figsize=(8, 5))
+
+        lags = np.arange(1, len(acf_vals) + 1)
+        ax.bar(lags, acf_vals, color='steelblue', alpha=0.7)
+
+        # Confidence bands (approximate)
+        n = len(self._compute_inter_arrivals())
+        conf = 1.96 / np.sqrt(n)
+        ax.axhline(conf, color='red', linestyle='--', alpha=0.5, label='95% CI')
+        ax.axhline(-conf, color='red', linestyle='--', alpha=0.5)
+        ax.axhline(0, color='black', linewidth=0.5)
+
+        ax.set_xlabel('Lag')
+        ax.set_ylabel('ACF')
+        ax.set_title('ACF of Inter-Arrival Times')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        return fig
+
+    def _plot_intensity_heatmap(self):
+        """Plot intensity by hour showing clustering."""
+        import matplotlib.pyplot as plt
+
+        times = np.array([e.time for e in self.result.rfq_events])
+        hours = (times % self.cfg.minutes_per_day) / 60
+        days = times // self.cfg.minutes_per_day
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+
+        # 2D histogram
+        h, xedges, yedges = np.histogram2d(
+            days, hours,
+            bins=[int(self.cfg.T_days), 24]
+        )
+
+        im = ax.imshow(h.T, aspect='auto', origin='lower', cmap='hot',
+                       extent=[0, self.cfg.T_days, 0, self.cfg.trading_hours])
+
+        ax.set_xlabel('Day')
+        ax.set_ylabel('Hour of Day')
+        ax.set_title('RFQ Arrival Intensity Heatmap')
+        plt.colorbar(im, ax=ax, label='RFQ Count')
+
+        plt.tight_layout()
+        return fig
+
+    def _plot_qq(self):
+        """QQ plot of rescaled inter-arrivals vs Exp(1)."""
+        import matplotlib.pyplot as plt
+        from scipy import stats
+
+        inter_arrivals = self._compute_inter_arrivals()
+
+        # Rescale to Exp(1)
+        rate = 1 / np.mean(inter_arrivals)
+        rescaled = inter_arrivals * rate
+
+        fig, ax = plt.subplots(figsize=(6, 6))
+
+        stats.probplot(rescaled, dist="expon", plot=ax)
+        ax.set_title('QQ Plot: Rescaled Inter-Arrivals vs Exp(1)')
+        ax.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        return fig
+
     def analyze(self, generate_plots: bool = False) -> DiagnosticResult:
         """
         Run full Hawkes diagnostic analysis.
@@ -136,7 +237,17 @@ class HawkesDiagnostics:
 
         passed = stats["acf_lag1"] >= 0.05 and branching < 1.0
 
-        figures = []  # Plots will be added in Task 4
+        figures = []
+        if generate_plots:
+            try:
+                import matplotlib.pyplot as plt
+                plt.switch_backend('Agg')  # Non-interactive backend for testing
+                figures.append(self._plot_inter_arrival_histogram())
+                figures.append(self._plot_acf())
+                figures.append(self._plot_intensity_heatmap())
+                figures.append(self._plot_qq())
+            except ImportError as e:
+                warnings.append(f"matplotlib not available for plots: {e}")
 
         return DiagnosticResult(
             name="Hawkes Arrivals",
