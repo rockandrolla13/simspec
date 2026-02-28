@@ -1,0 +1,685 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{geometry}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{tcolorbox}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{setspace}
+\usepackage{parskip}
+\usepackage{listings}
+\usepackage{tabularx}
+\usepackage{multirow}
+\usepackage{array}
+
+\geometry{margin=1in, top=1.2in, bottom=1.2in}
+\onehalfspacing
+
+\definecolor{navy}{RGB}{0,40,85}
+\definecolor{steel}{RGB}{70,100,130}
+\definecolor{accent}{RGB}{180,50,50}
+\definecolor{lightgray}{RGB}{245,245,245}
+\definecolor{codegreen}{RGB}{40,120,40}
+\definecolor{codegray}{RGB}{100,100,100}
+
+\hypersetup{colorlinks=true, linkcolor=navy, urlcolor=steel}
+
+\titleformat{\section}{\Large\bfseries\color{navy}}{}{0em}{}[\vspace{-0.3em}\textcolor{navy}{\rule{\textwidth}{0.8pt}}]
+\titleformat{\subsection}{\large\bfseries\color{steel}}{}{0em}{}
+\titleformat{\subsubsection}{\normalsize\bfseries\color{steel}}{}{0em}{}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{steel}\textsc{Alpha-Driven RFQ Simulator --- Technical Specification}}
+\fancyfoot[C]{\small\color{steel}\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+\newtcolorbox{specbox}[1][]{
+  colback=lightgray, colframe=navy, boxrule=0.5pt,
+  fonttitle=\bfseries\color{navy}, title=#1,
+  sharp corners, left=8pt, right=8pt, top=6pt, bottom=6pt
+}
+
+\newtcolorbox{parambox}[1][]{
+  colback=blue!2, colframe=steel, boxrule=0.4pt,
+  fonttitle=\bfseries\color{steel}, title=#1,
+  sharp corners, left=8pt, right=8pt, top=5pt, bottom=5pt
+}
+
+\newtcolorbox{warnbox}[1][]{
+  colback=red!3, colframe=accent, boxrule=0.4pt,
+  fonttitle=\bfseries\color{accent}, title=#1,
+  sharp corners, left=8pt, right=8pt, top=5pt, bottom=5pt
+}
+
+\lstset{
+  basicstyle=\small\ttfamily,
+  keywordstyle=\color{navy}\bfseries,
+  commentstyle=\color{codegray}\itshape,
+  stringstyle=\color{codegreen},
+  frame=single,
+  rulecolor=\color{steel!30},
+  backgroundcolor=\color{lightgray},
+  breaklines=true,
+  columns=fullflexible
+}
+
+\begin{document}
+
+% --- Title ---
+\begin{center}
+{\Huge\bfseries\color{navy} Alpha-Driven RFQ Simulator\\[0.3em] Technical Specification}\\[1em]
+{\large\color{steel} Jupyter Notebook Implementation Guide}\\[0.5em]
+{\color{steel}\rule{0.4\textwidth}{0.4pt}}\\[0.5em]
+{\color{steel}\today \quad$\cdot$\quad Confidential}
+\end{center}
+
+\vspace{0.5em}
+\tableofcontents
+\newpage
+
+
+% ============================================================
+\section{Overview}
+% ============================================================
+
+This document specifies a discrete-event simulator for the alpha-driven liquidity provision strategy described in the companion strategy document. The simulator operates at the granularity of individual RFQ events, models a single bond over a configurable time horizon, and produces P\&L paths decomposed into alpha, spread, and carry components.
+
+The simulator is structured as a linear pipeline:
+
+\begin{enumerate}[leftmargin=2em]
+  \item Generate a true price path (Section~\ref{sec:price}).
+  \item Generate an alpha signal with calibrated noise (Section~\ref{sec:alpha}).
+  \item Generate RFQ arrivals (Section~\ref{sec:rfq}).
+  \item At each RFQ, compute the optimal quote and simulate the fill (Sections~\ref{sec:quoting}--\ref{sec:fill}).
+  \item Track inventory, P\&L, and diagnostics (Section~\ref{sec:accounting}).
+\end{enumerate}
+
+All random processes are seeded for reproducibility.
+
+
+% ============================================================
+\section{Simulation Clock and Time Grid}
+% ============================================================
+
+\begin{parambox}[Knobs]
+\begin{tabular}{@{}lll@{}}
+\texttt{T\_days} & int & Simulation horizon in trading days (default: 60) \\
+\texttt{dt\_minutes} & float & Time step for price evolution (default: 5) \\
+\texttt{trading\_hours} & float & Hours per trading day (default: 8) \\
+\end{tabular}
+\end{parambox}
+
+The simulation clock runs in continuous minutes from $t=0$ to $t = T_{\text{days}} \times \text{trading\_hours} \times 60$. The price process is discretized at \texttt{dt\_minutes} intervals. RFQ arrivals occur at arbitrary times within trading hours (Section~\ref{sec:rfq}).
+
+Denote the total number of price steps $N_{\text{steps}} = T_{\text{days}} \times (\text{trading\_hours} \times 60 / \texttt{dt\_minutes})$.
+
+
+% ============================================================
+\section{True Price Process}\label{sec:price}
+% ============================================================
+
+The true bond mid-price evolves as an arithmetic Brownian motion with mean-reverting drift, capturing both directional moves and the tendency of credit spreads to mean-revert.
+
+\begin{equation}
+p_{t+dt} = p_t + \underbrace{\kappa(\bar{p} - p_t)\,dt}_{\text{mean reversion}} + \underbrace{\sigma \sqrt{dt}\;\epsilon_t}_{\text{diffusion}}, \qquad \epsilon_t \sim \mathcal{N}(0,1)
+\end{equation}
+
+\begin{parambox}[Knobs]
+\begin{tabular}{@{}lll@{}}
+\texttt{p0} & float & Initial price in dollars (default: 100.0) \\
+\texttt{sigma\_daily\_bps} & float & Daily volatility in bps (default: 50) \\
+\texttt{kappa\_daily} & float & Mean-reversion speed per day (default: 0.02) \\
+\texttt{p\_bar} & float & Long-run mean price (default: \texttt{p0}) \\
+\end{tabular}
+\end{parambox}
+
+\textbf{Unit conversion.} The model operates in dollar price. Convert:
+\begin{equation}
+\sigma_{\text{per step}} = \frac{\sigma_{\text{daily,bps}}}{10000} \times p_0 \times \sqrt{\frac{dt_{\text{min}}}{480}}
+\end{equation}
+where 480 = trading minutes per day. Similarly $\kappa_{\text{per step}} = \kappa_{\text{daily}} \times (dt_{\text{min}} / 480)$.
+
+\begin{specbox}[Realistic Ranges]
+For investment-grade corporates: $\sigma_{\text{daily}} \in [20, 80]$ bps, $\kappa_{\text{daily}} \in [0.005, 0.05]$.\\
+For high-yield: $\sigma_{\text{daily}} \in [50, 200]$ bps, $\kappa_{\text{daily}} \in [0.01, 0.10]$.
+\end{specbox}
+
+
+% ============================================================
+\section{Alpha Signal}\label{sec:alpha}
+% ============================================================
+
+The alpha signal is a noisy, decaying forecast of future price changes. It is generated as a function of the \emph{true future path} (which the simulator knows but the trader does not observe directly), corrupted by noise.
+
+\subsection{Signal Generation}
+
+At each time $t$, the theoretical (perfect-foresight) alpha is the true forward return over the signal horizon $H$:
+\begin{equation}
+\alpha^*_t = p_{t+H} - p_t
+\end{equation}
+
+The trader observes a noisy version:
+\begin{equation}
+\alpha_t = \rho \cdot \alpha^*_t + \sqrt{1 - \rho^2}\;\cdot\;\sigma_{\alpha}\;\eta_t, \qquad \eta_t \sim \mathcal{N}(0,1)
+\end{equation}
+
+where $\rho$ is the signal-to-noise correlation (information coefficient, IC) and $\sigma_\alpha$ is the standard deviation of the true alpha. This ensures $\text{Corr}(\alpha_t, \alpha^*_t) = \rho$.
+
+\subsection{Signal Decay}
+
+The alpha decays linearly as the horizon shrinks. At time $t$, if the signal was generated at time $t_0$ with horizon $H$:
+\begin{equation}
+\alpha_{\text{remaining}}(t) = \alpha_{t_0} \cdot \max\!\left(0,\; \frac{t_0 + H - t}{H}\right)
+\end{equation}
+
+\subsection{Signal Refresh}
+
+New signals are generated every \texttt{signal\_refresh\_hours} hours, representing the alpha model updating.
+
+\begin{parambox}[Knobs]
+\begin{tabular}{@{}lll@{}}
+\texttt{IC} & float & Information coefficient $\rho \in [0, 1]$ (default: 0.10) \\
+\texttt{alpha\_horizon\_days} & float & Signal horizon $H$ in days (default: 10) \\
+\texttt{signal\_refresh\_hours} & float & Hours between signal updates (default: 24) \\
+\end{tabular}
+\end{parambox}
+
+\begin{specbox}[Realistic Ranges]
+Typical credit alpha models: $\text{IC} \in [0.03, 0.15]$. An IC of 0.05 is weak but tradeable with enough breadth. An IC of 0.15 is very strong. Signal horizons of 5--20 days are standard for fundamental/quantamental credit.
+\end{specbox}
+
+
+% ============================================================
+\section{Target Position}\label{sec:target}
+% ============================================================
+
+The target position maps the alpha signal to a desired inventory level:
+\begin{equation}
+q^*_t = \text{clip}\!\left(\frac{\alpha_{\text{remaining}}(t)}{\gamma \cdot \sigma^2_{\text{daily}}},\; -q_{\max},\; q_{\max}\right)
+\end{equation}
+
+where $\gamma$ is risk aversion and $\sigma^2_{\text{daily}}$ is the daily price variance. The clip enforces hard position limits.
+
+Inventory is measured in \textbf{lots} (each lot = \texttt{lot\_size\_mm} million face value).
+
+\begin{parambox}[Knobs]
+\begin{tabular}{@{}lll@{}}
+\texttt{gamma} & float & Risk aversion coefficient (default: 1.0) \\
+\texttt{q\_max} & int & Maximum position in lots (default: 20) \\
+\texttt{lot\_size\_mm} & float & Face value per lot in \$MM (default: 1.0) \\
+\end{tabular}
+\end{parambox}
+
+
+% ============================================================
+\section{RFQ Arrival Process}\label{sec:rfq}
+% ============================================================
+
+\subsection{Arrival Times}
+
+RFQs arrive as a Poisson process with a time-varying rate that captures intraday seasonality:
+\begin{equation}
+\mu(h) = \mu_{\text{base}} \cdot f(h)
+\end{equation}
+
+where $h$ is the hour within the trading day and $f(h)$ is a normalized intraday intensity curve. A simple parametric form:
+\begin{equation}
+f(h) = 1 + A_{\text{open}} \cdot e^{-(h - h_{\text{open}})^2 / \tau^2} + A_{\text{close}} \cdot e^{-(h - h_{\text{close}})^2 / \tau^2}
+\end{equation}
+
+This produces the U-shaped pattern with elevated activity at open and close. For simplicity, a flat rate ($f(h) = 1$) is a reasonable starting point.
+
+\textbf{Simulation.} Draw inter-arrival times from $\text{Exp}(1/\mu_{\text{base}})$ (in minutes), reject arrivals outside trading hours.
+
+\subsection{RFQ Direction}
+
+Each RFQ is a client buy (you sell / offer) or client sell (you buy / bid) with probability:
+\begin{equation}
+P(\text{client buy}) = 0.5 + \delta_{\text{flow}}
+\end{equation}
+
+where $\delta_{\text{flow}}$ is a directional bias. Under neutral conditions $\delta_{\text{flow}} = 0$. To simulate one-sided flow environments (e.g., forced selling), set $\delta_{\text{flow}} \neq 0$.
+
+\subsection{RFQ Size}
+
+Trade size in lots, drawn from a shifted log-normal:
+\begin{equation}
+\text{size} = \lceil \exp(\mu_{\text{size}} + \sigma_{\text{size}} \cdot Z) \rceil, \qquad Z \sim \mathcal{N}(0,1)
+\end{equation}
+clipped to $[1, \text{size\_max}]$.
+
+\subsection{Number of Competing Dealers}
+
+Drawn from a shifted Poisson:
+\begin{equation}
+N = 1 + \text{Poisson}(\bar{N} - 1)
+\end{equation}
+clipped to $[1, N_{\max}]$. This ensures at least 1 competitor.
+
+\subsection{Client Toxicity}
+
+Each RFQ is assigned a toxicity score $\tau_c \in [0, 1]$ drawn from a Beta distribution:
+\begin{equation}
+\tau_c \sim \text{Beta}(a_{\text{tox}}, b_{\text{tox}})
+\end{equation}
+
+Toxicity affects post-fill adverse price movement (Section~\ref{sec:fill}). The Beta parameterization allows for a right-skewed distribution (most clients are benign, a few are toxic).
+
+\begin{parambox}[Knobs]
+\begin{tabular}{@{}lll@{}}
+\texttt{rfq\_rate\_per\_day} & float & $\mu_{\text{base}} \times \text{trading\_hours} \times 60$ (default: 15) \\
+\texttt{flow\_bias} & float & $\delta_{\text{flow}} \in [-0.3, 0.3]$ (default: 0.0) \\
+\texttt{size\_mu} & float & Log-mean of size distribution (default: 0.5) \\
+\texttt{size\_sigma} & float & Log-std of size distribution (default: 0.8) \\
+\texttt{size\_max} & int & Maximum trade size in lots (default: 10) \\
+\texttt{n\_dealers\_mean} & float & $\bar{N}$, mean competing dealers (default: 4) \\
+\texttt{n\_dealers\_max} & int & $N_{\max}$ (default: 8) \\
+\texttt{tox\_a} & float & Beta shape $a$ (default: 2.0) \\
+\texttt{tox\_b} & float & Beta shape $b$ (default: 8.0) \\
+\end{tabular}
+\end{parambox}
+
+\begin{specbox}[Realistic Ranges]
+Liquid IG bonds: 15--40 RFQs/day, mean 4--5 dealers per RFQ, sizes 1--5MM.\\
+Illiquid HY bonds: 2--8 RFQs/day, mean 2--3 dealers per RFQ, sizes 0.5--3MM.\\
+Beta(2, 8) gives mean toxicity of 0.2, with 90th percentile around 0.45.
+\end{specbox}
+
+
+% ============================================================
+\section{Observable Mid and Skew}\label{sec:skew}
+% ============================================================
+
+The trader does not observe the true price $p_t$ directly. The observable mid is a lagged, noisy version:
+\begin{equation}
+\text{mid}_{\text{obs},t} = p_{t - \Delta t_{\text{lag}}} + \sigma_{\text{obs}} \cdot \xi_t, \qquad \xi_t \sim \mathcal{N}(0,1)
+\end{equation}
+
+where $\Delta t_{\text{lag}}$ is the observation delay (stale pricing) and $\sigma_{\text{obs}}$ is observation noise.
+
+The \textbf{skew} signal is a noisy short-horizon predictor of $p_t - \text{mid}_{\text{obs},t}$ (the staleness correction). For simplicity, model skew as:
+\begin{equation}
+s_t = \rho_s \cdot (p_t - \text{mid}_{\text{obs},t}) + \sqrt{1 - \rho_s^2}\;\sigma_{\text{stale}}\;\zeta_t
+\end{equation}
+
+where $\rho_s$ is the skew model accuracy and $\sigma_{\text{stale}}$ is the typical staleness magnitude.
+
+The trader's theo is then:
+\begin{equation}
+\text{theo}_t = \text{mid}_{\text{obs},t} + s_t + \ell(q_t, q^*_t)
+\end{equation}
+
+\begin{parambox}[Knobs]
+\begin{tabular}{@{}lll@{}}
+\texttt{obs\_lag\_minutes} & float & Observation delay (default: 15) \\
+\texttt{obs\_noise\_bps} & float & Observation noise in bps (default: 5) \\
+\texttt{skew\_accuracy} & float & $\rho_s \in [0, 1]$ (default: 0.3) \\
+\end{tabular}
+\end{parambox}
+
+
+% ============================================================
+\section{Lean Computation}\label{sec:lean}
+% ============================================================
+
+The lean adjusts theo toward the target position:
+\begin{equation}
+\ell(q_t, q^*_t) = -\lambda_{\text{eff}} \cdot (q_t - q^*_t)
+\end{equation}
+
+with the effective lean coefficient:
+\begin{equation}
+\lambda_{\text{eff}} = \lambda_{\text{base}} \cdot \underbrace{\left(\frac{\sigma_{\text{daily}}}{\sigma_{\text{ref}}}\right)^2}_{\text{vol scaling}} \cdot \underbrace{\left(1 + \kappa_{\text{urg}} \cdot \frac{t - t_{\text{signal}}}{H}\right)}_{\text{urgency}} \cdot \underbrace{\left(1 + \kappa_{\text{conv}} \cdot |q_t - q^*_t|\right)}_{\text{convexity}}
+\end{equation}
+
+The urgency term increases the lean as the alpha signal ages (approaching expiry). The convexity term leans harder as inventory deviates further from target.
+
+\begin{parambox}[Knobs]
+\begin{tabular}{@{}lll@{}}
+\texttt{lambda\_base\_bps} & float & Base lean per unit gap, in bps (default: 2.0) \\
+\texttt{sigma\_ref\_bps} & float & Reference daily vol for normalization (default: 50) \\
+\texttt{kappa\_urgency} & float & Urgency multiplier at signal expiry (default: 1.0) \\
+\texttt{kappa\_convexity} & float & Convexity per lot of gap (default: 0.1) \\
+\end{tabular}
+\end{parambox}
+
+
+% ============================================================
+\section{Win-Rate Model and Optimal Quoting}\label{sec:quoting}
+% ============================================================
+
+\subsection{Win-Rate Curve}
+
+The probability of winning an RFQ given the trader's quote $p$ is modeled as a logistic function of aggressiveness:
+\begin{equation}
+P(\text{win} \mid p, \mathbf{z}) = \frac{1}{1 + \exp\!\big({-\beta_0(\mathbf{z}) \cdot (c(\mathbf{z}) - |p - p_{\text{true}}|)}\big)}
+\end{equation}
+
+where:
+\begin{itemize}[leftmargin=2em]
+  \item $|p - p_{\text{true}}|$ is the absolute markup over the true price (the simulator knows this; the trader uses theo as a proxy).
+  \item $c(\mathbf{z})$ is the \textbf{competitive center}: the typical markup at which win probability is 50\%. It represents the consensus dealer markup.
+  \item $\beta_0(\mathbf{z})$ is the \textbf{steepness}: how fast win probability changes with markup. Larger $\beta_0$ = more competitive.
+\end{itemize}
+
+Both parameters depend on the RFQ context $\mathbf{z}$:
+\begin{align}
+c(\mathbf{z}) &= c_{\text{base}} + c_N \cdot (N - \bar{N}) + c_{\text{size}} \cdot \log(\text{size}) \\[4pt]
+\beta_0(\mathbf{z}) &= \beta_{\text{base}} + \beta_N \cdot N
+\end{align}
+
+More dealers $\to$ tighter competitive center and steeper curve. Larger size $\to$ wider center (less competition on big tickets).
+
+\begin{parambox}[Knobs]
+\begin{tabular}{@{}lll@{}}
+\texttt{c\_base\_bps} & float & Baseline 50\%-win markup in bps (default: 8.0) \\
+\texttt{c\_N\_bps} & float & Center shift per additional dealer (default: $-1.0$) \\
+\texttt{c\_size\_bps} & float & Center shift per log-lot (default: 2.0) \\
+\texttt{beta\_base} & float & Baseline steepness (default: 0.8) \\
+\texttt{beta\_N} & float & Steepness increase per dealer (default: 0.15) \\
+\end{tabular}
+\end{parambox}
+
+\begin{specbox}[Realistic Ranges]
+Liquid IG: $c \approx 3$--8 bps, steep curve ($\beta_0 \approx 1.5$--3). A 1bp price improvement changes win rate by 10--20\%.\\
+Illiquid HY: $c \approx 15$--40 bps, flat curve ($\beta_0 \approx 0.3$--0.8). Takes 5--10bps to meaningfully shift outcomes.
+\end{specbox}
+
+\subsection{Optimal Quote}
+
+For each RFQ, the trader computes the quote that maximizes expected value. Define:
+\begin{align}
+\text{edge}(m) &= m \cdot \text{direction} \quad \text{(positive = trader earns spread)} \\
+\Delta V &= V_{\text{value}}(q \pm \text{size}) - V_{\text{value}}(q) \label{eq:contval}
+\end{align}
+
+where $m$ is the markup over theo and direction $= +1$ for client-buy, $-1$ for client-sell. The continuation value $\Delta V$ captures the benefit of getting closer to (or further from) target. A tractable approximation:
+\begin{equation}
+\Delta V \approx \alpha_{\text{remaining}} \cdot \Delta q \cdot \mathbb{1}[\text{favorable}] - \text{risk\_penalty} \cdot \Delta q \cdot \mathbb{1}[\text{adverse}]
+\end{equation}
+
+where $\Delta q$ is the signed inventory change and $\text{risk\_penalty} = \gamma \cdot \sigma^2_{\text{daily}} \cdot (q_t - q^*_t) / q_{\max}$ captures the cost of moving further from target.
+
+The objective:
+\begin{equation}
+m^* = \arg\max_m \; P\!\left(\text{win} \;\big|\; \text{theo} + m\right) \cdot \left[\text{edge}(m) + \Delta V\right]
+\end{equation}
+
+\textbf{Implementation.} Solve numerically on a grid of markups from $m \in [-m_{\max}, +m_{\max}]$ at 0.1bps resolution. Alternatively, use scipy's scalar minimization on the negative objective.
+
+\subsection{Quote Bounds}
+
+Two hard constraints on the optimal markup:
+\begin{enumerate}[leftmargin=2em]
+  \item \textbf{Alpha bound}: the trader never pays more than the remaining alpha.
+  \begin{equation}
+  \text{edge}(m) + \Delta V \geq -|\alpha_{\text{remaining}}| \cdot |\Delta q|
+  \end{equation}
+  \item \textbf{Position bound}: the fill must not breach $|q + \Delta q| \leq q_{\max}$.
+\end{enumerate}
+
+If no feasible $m$ yields positive expected value, the trader \textbf{declines} the RFQ.
+
+\begin{parambox}[Knobs]
+\begin{tabular}{@{}lll@{}}
+\texttt{m\_max\_bps} & float & Maximum markup grid extent (default: 30) \\
+\texttt{m\_grid\_bps} & float & Markup grid resolution (default: 0.1) \\
+\end{tabular}
+\end{parambox}
+
+
+% ============================================================
+\section{Fill Simulation}\label{sec:fill}
+% ============================================================
+
+\subsection{Fill Decision}
+
+Given the optimal quote $p^* = \text{theo} + m^*$, the fill is a Bernoulli draw:
+\begin{equation}
+\text{filled} \sim \text{Bernoulli}\!\left(P(\text{win} \mid p^*, \mathbf{z})\right)
+\end{equation}
+
+Note: the win-rate model used \emph{by the trader} for optimization uses theo as a proxy for the true price. The simulator evaluates the \emph{actual} win probability using the true price $p_t$. This discrepancy is the source of estimation error and adverse selection.
+
+\subsection{Post-Fill Adverse Move}
+
+After a fill, the true price experiences an additional adverse move correlated with client toxicity. This models informed flow:
+\begin{equation}
+p_{t^+} = p_t + \text{direction} \cdot \tau_c \cdot \sigma_{\text{adverse}} \cdot |Z|, \qquad Z \sim \mathcal{N}(0,1)
+\end{equation}
+
+where direction is $+1$ if the client bought (price moves up after informed buy) and $\sigma_{\text{adverse}}$ scales the magnitude. This one-time jump is applied to the price path immediately after the fill.
+
+\begin{parambox}[Knobs]
+\begin{tabular}{@{}lll@{}}
+\texttt{adverse\_move\_bps} & float & $\sigma_{\text{adverse}}$ scale in bps (default: 5.0) \\
+\end{tabular}
+\end{parambox}
+
+
+% ============================================================
+\section{Accounting and P\&L}\label{sec:accounting}
+% ============================================================
+
+\subsection{State Variables}
+
+At each time step, track:
+\begin{itemize}[leftmargin=2em]
+  \item $q_t$: current inventory in lots.
+  \item $\text{cash}_t$: cumulative cash from trades (price $\times$ size, signed).
+  \item $\text{spread\_pnl}_t$: cumulative spread income $\sum (\text{fill\_price} - \text{true\_price}_t) \cdot \text{signed\_size}$.
+  \item $q^*_t$: current target.
+  \item $\alpha_t$: current alpha signal.
+\end{itemize}
+
+\subsection{P\&L Decomposition}
+
+At each time step $t$, mark the portfolio to market:
+\begin{equation}
+\text{MTM}_t = \text{cash}_t + q_t \cdot p_t \cdot \text{lot\_size\_mm} \times 10000
+\end{equation}
+
+\textbf{Alpha P\&L.} The return from being correctly positioned:
+\begin{equation}
+\text{PnL}_{\text{alpha}, t} = q_{t-1} \cdot (p_t - p_{t-1}) \cdot \text{lot\_size}
+\end{equation}
+
+\textbf{Spread P\&L.} Edge earned at execution (computed at fill time):
+\begin{equation}
+\text{PnL}_{\text{spread}, k} = (p_{\text{fill},k} - p_{\text{true},k}) \cdot \text{signed\_size}_k \cdot \text{lot\_size}
+\end{equation}
+
+\textbf{Carry P\&L.} Simplified daily accrual:
+\begin{equation}
+\text{PnL}_{\text{carry, day}} = q_t \cdot \text{lot\_size} \cdot \frac{\text{coupon\_bps}}{360}
+\end{equation}
+
+\begin{parambox}[Knobs]
+\begin{tabular}{@{}lll@{}}
+\texttt{coupon\_bps} & float & Annual coupon in bps of face (default: 500) \\
+\end{tabular}
+\end{parambox}
+
+
+% ============================================================
+\section{Diagnostics and Output}\label{sec:diagnostics}
+% ============================================================
+
+The simulator should produce the following outputs for analysis:
+
+\subsection{Time Series (Plot)}
+
+\begin{enumerate}[leftmargin=2em]
+  \item \textbf{Price and theo}: true price $p_t$, observable mid, and trader's theo on one axis.
+  \item \textbf{Inventory path}: $q_t$ and $q^*_t$ overlaid, showing convergence behavior.
+  \item \textbf{Cumulative P\&L}: total, alpha, spread, and carry components stacked.
+  \item \textbf{Alpha signal}: $\alpha_t$ and $\alpha_{\text{remaining}}$ over time.
+\end{enumerate}
+
+\subsection{RFQ-Level Log (DataFrame)}
+
+Each RFQ event should produce a row with:
+
+\begin{table}[h!]
+\centering\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Field} & \textbf{Description} \\
+\midrule
+\texttt{time} & Arrival time \\
+\texttt{direction} & Client buy / sell \\
+\texttt{size} & Trade size in lots \\
+\texttt{n\_dealers} & Number of competing dealers \\
+\texttt{toxicity} & Client toxicity score \\
+\texttt{favorable} & Boolean: does this RFQ push toward $q^*$? \\
+\texttt{p\_true} & True price at time of RFQ \\
+\texttt{theo} & Trader's theo \\
+\texttt{lean} & Lean component \\
+\texttt{optimal\_markup} & Computed $m^*$ \\
+\texttt{quote} & Final quote price \\
+\texttt{win\_prob} & $P(\text{win})$ at quote \\
+\texttt{filled} & Boolean \\
+\texttt{spread\_pnl} & Edge earned if filled \\
+\texttt{q\_before} & Inventory before \\
+\texttt{q\_after} & Inventory after \\
+\texttt{declined} & Boolean: did trader decline? \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Summary Statistics}
+
+\begin{table}[h!]
+\centering\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Metric} & \textbf{Computation} \\
+\midrule
+Total P\&L & $\text{MTM}_T - \text{MTM}_0$ \\
+Alpha P\&L & $\sum q_t \cdot \Delta p_{t+1}$ \\
+Spread P\&L & $\sum_{\text{fills}} \text{edge}_k$ \\
+Alpha Capture Ratio & $\sum q_t \Delta p / \sum q^*_t \Delta p$ \\
+Sharpe Ratio & Annualized $\mathbb{E}[\text{daily PnL}] / \text{Std}[\text{daily PnL}]$ \\
+Fill Rate (favorable) & Fills / RFQs on favorable side \\
+Fill Rate (adverse) & Fills / RFQs on adverse side \\
+Avg.\ Convergence Time & Mean time to reach 80\% of $|q^*|$ after signal update \\
+Decline Rate & Declined / total RFQs \\
+Mean Adverse Selection & Avg.\ 1-hour MTM after fill \\
+Max Drawdown & Worst peak-to-trough \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+% ============================================================
+\section{Scenario Sweep and Sensitivity Analysis}
+% ============================================================
+
+The simulator should support batch runs over parameter grids. Priority sweep dimensions:
+
+\begin{table}[h!]
+\centering\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Dimension} & \textbf{Range} & \textbf{Question Answered} \\
+\midrule
+\texttt{lambda\_base\_bps} & [0.5, 1, 2, 4, 8] & How aggressive should the lean be? \\
+\texttt{IC} & [0.03, 0.05, 0.10, 0.15] & How good must the alpha be? \\
+\texttt{rfq\_rate\_per\_day} & [3, 8, 15, 30] & Does the strategy work in illiquid names? \\
+\texttt{flow\_bias} & [$-0.2$, 0, $+0.2$] & Impact of one-sided flow? \\
+\texttt{c\_base\_bps} & [3, 8, 15, 30] & Effect of dealer competitiveness? \\
+\texttt{gamma} & [0.5, 1, 2, 5] & Risk aversion tradeoff? \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+For each sweep, run $M \geq 200$ Monte Carlo paths and report the distribution of outcomes (mean, 5th/95th percentile of total P\&L, Sharpe, ACR).
+
+
+% ============================================================
+\section{Complete Parameter Reference}\label{sec:params}
+% ============================================================
+
+\begin{table}[h!]
+\centering\small
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{@{}p{3.8cm}p{1.2cm}p{1.8cm}p{5.5cm}@{}}
+\toprule
+\textbf{Parameter} & \textbf{Type} & \textbf{Default} & \textbf{Description} \\
+\midrule
+\multicolumn{4}{@{}l}{\textbf{Simulation}} \\
+\texttt{T\_days} & int & 60 & Horizon in trading days \\
+\texttt{dt\_minutes} & float & 5 & Price step size \\
+\texttt{trading\_hours} & float & 8 & Trading hours per day \\
+\texttt{n\_mc\_paths} & int & 500 & Monte Carlo paths for batch runs \\
+\texttt{seed} & int & 42 & Random seed \\
+\midrule
+\multicolumn{4}{@{}l}{\textbf{Price process}} \\
+\texttt{p0} & float & 100.0 & Initial price (\$) \\
+\texttt{sigma\_daily\_bps} & float & 50 & Daily volatility (bps) \\
+\texttt{kappa\_daily} & float & 0.02 & Mean-reversion speed \\
+\texttt{p\_bar} & float & 100.0 & Long-run mean price \\
+\midrule
+\multicolumn{4}{@{}l}{\textbf{Alpha signal}} \\
+\texttt{IC} & float & 0.10 & Information coefficient \\
+\texttt{alpha\_horizon\_days} & float & 10 & Signal horizon \\
+\texttt{signal\_refresh\_hours} & float & 24 & Update frequency \\
+\midrule
+\multicolumn{4}{@{}l}{\textbf{Position target}} \\
+\texttt{gamma} & float & 1.0 & Risk aversion \\
+\texttt{q\_max} & int & 20 & Max position (lots) \\
+\texttt{lot\_size\_mm} & float & 1.0 & \$MM per lot \\
+\midrule
+\multicolumn{4}{@{}l}{\textbf{RFQ arrivals}} \\
+\texttt{rfq\_rate\_per\_day} & float & 15 & Daily RFQ count \\
+\texttt{flow\_bias} & float & 0.0 & Directional bias \\
+\texttt{size\_mu} & float & 0.5 & Log-mean size \\
+\texttt{size\_sigma} & float & 0.8 & Log-std size \\
+\texttt{size\_max} & int & 10 & Max trade size (lots) \\
+\texttt{n\_dealers\_mean} & float & 4 & Mean competitors \\
+\texttt{n\_dealers\_max} & int & 8 & Max competitors \\
+\texttt{tox\_a} & float & 2.0 & Toxicity Beta $a$ \\
+\texttt{tox\_b} & float & 8.0 & Toxicity Beta $b$ \\
+\midrule
+\multicolumn{4}{@{}l}{\textbf{Observable mid and skew}} \\
+\texttt{obs\_lag\_minutes} & float & 15 & Pricing staleness \\
+\texttt{obs\_noise\_bps} & float & 5 & Observation noise \\
+\texttt{skew\_accuracy} & float & 0.3 & Skew model $\rho_s$ \\
+\midrule
+\multicolumn{4}{@{}l}{\textbf{Lean}} \\
+\texttt{lambda\_base\_bps} & float & 2.0 & Base lean coefficient \\
+\texttt{sigma\_ref\_bps} & float & 50 & Reference vol for scaling \\
+\texttt{kappa\_urgency} & float & 1.0 & Urgency multiplier \\
+\texttt{kappa\_convexity} & float & 0.1 & Convexity per lot \\
+\midrule
+\multicolumn{4}{@{}l}{\textbf{Win-rate model}} \\
+\texttt{c\_base\_bps} & float & 8.0 & Baseline 50\%-win center \\
+\texttt{c\_N\_bps} & float & $-1.0$ & Center shift per dealer \\
+\texttt{c\_size\_bps} & float & 2.0 & Center shift per log-lot \\
+\texttt{beta\_base} & float & 0.8 & Baseline steepness \\
+\texttt{beta\_N} & float & 0.15 & Steepness per dealer \\
+\texttt{m\_max\_bps} & float & 30 & Markup grid extent \\
+\midrule
+\multicolumn{4}{@{}l}{\textbf{Post-fill dynamics}} \\
+\texttt{adverse\_move\_bps} & float & 5.0 & Adverse selection scale \\
+\midrule
+\multicolumn{4}{@{}l}{\textbf{Carry}} \\
+\texttt{coupon\_bps} & float & 500 & Annual coupon (bps of face) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\vfill
+\begin{center}
+{\small\color{steel}\textsc{End of Specification}}
+\end{center}
+
+\end{document}
