@@ -15,6 +15,7 @@ from .realistic_diagnostics import (
     HawkesDiagnostics,
     SpreadDiagnostics,
     ImbalanceDiagnostics,
+    StreetLeanDiagnostics,
     ValidationReport,
 )
 
@@ -36,6 +37,7 @@ __all__ = [
     "HawkesDiagnostics",
     "SpreadDiagnostics",
     "ImbalanceDiagnostics",
+    "StreetLeanDiagnostics",
     "ValidationReport",
     # Narrative
     "format_narrative",

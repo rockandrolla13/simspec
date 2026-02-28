@@ -23,14 +23,16 @@ class TestDiagnosticsIntegration:
         report = ValidationReport(result)
         results = report.run_all(generate_plots=False)
 
-        assert len(results) == 3
+        # 3 optional features + 1 always-on (street lean)
+        assert len(results) == 4
         assert report.summary() != ""
 
-        # Check all three diagnostics ran
+        # Check all four diagnostics ran
         names = [r.name for r in results]
         assert "Hawkes Arrivals" in names
         assert "LogNormal Spreads" in names
         assert "AR(1) Imbalance" in names
+        assert "Street Lean" in names
 
     def test_partial_features_hawkes_only(self):
         """Run validation with only Hawkes enabled."""
@@ -45,8 +47,11 @@ class TestDiagnosticsIntegration:
         report = ValidationReport(result)
         results = report.run_all()
 
-        assert len(results) == 1
-        assert results[0].name == "Hawkes Arrivals"
+        # Hawkes + always-on street lean
+        assert len(results) == 2
+        names = [r.name for r in results]
+        assert "Hawkes Arrivals" in names
+        assert "Street Lean" in names
 
     def test_html_export(self):
         """Test HTML export produces valid file."""
@@ -90,6 +95,6 @@ class TestDiagnosticsIntegration:
         report = ValidationReport(result)
         results = report.run_all()
 
-        # Should return empty list when no features enabled
-        assert len(results) == 0
-        assert report.summary() == "No diagnostics run. Call run_all() first." or "Validated:" not in report.summary()
+        # Street lean is always included even with no optional features
+        assert len(results) == 1
+        assert results[0].name == "Street Lean"

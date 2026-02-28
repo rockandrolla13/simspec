@@ -200,10 +200,11 @@ class TestValidationReport:
         report = ValidationReport(full_result)
         assert report is not None
 
-    def test_run_all_returns_three_results(self, full_result):
+    def test_run_all_returns_four_results(self, full_result):
         report = ValidationReport(full_result)
         results = report.run_all()
-        assert len(results) == 3
+        # 3 optional features + 1 always-on (street lean)
+        assert len(results) == 4
 
     def test_summary_not_empty(self, full_result):
         report = ValidationReport(full_result)

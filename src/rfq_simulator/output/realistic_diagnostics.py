@@ -788,6 +788,7 @@ class ValidationReport:
         self.hawkes = HawkesDiagnostics(result)
         self.spread = SpreadDiagnostics(result)
         self.imbalance = ImbalanceDiagnostics(result)
+        self.street_lean = StreetLeanDiagnostics(result)
         self._results: List[DiagnosticResult] = []
 
     def run_all(self, generate_plots: bool = False) -> List[DiagnosticResult]:
@@ -813,6 +814,9 @@ class ValidationReport:
 
         if cfg.imbalance.use_ar1:
             self._results.append(self.imbalance.analyze(generate_plots))
+
+        # Street lean is always enabled
+        self._results.append(self.street_lean.analyze(generate_plots))
 
         return self._results
 
@@ -857,6 +861,8 @@ class ValidationReport:
                 parts.append(f"Spread widening {r.stats['regime_ratio']:.1f}x.")
             if "buy_frac_diff" in r.stats:
                 parts.append(f"Regime buy diff {r.stats['buy_frac_diff']:.1%}.")
+            if "mean_reversion_half_life" in r.stats:
+                parts.append(f"Street lean half-life {r.stats['mean_reversion_half_life']:.1f} days.")
 
         return " ".join(parts)
 
