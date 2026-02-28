@@ -597,3 +597,164 @@ class ImbalanceDiagnostics:
             narrative=narrative,
             warnings=warnings,
         )
+
+
+class ValidationReport:
+    """Aggregates all realistic distribution diagnostics."""
+
+    def __init__(self, result):
+        self.result = result
+        self.hawkes = HawkesDiagnostics(result)
+        self.spread = SpreadDiagnostics(result)
+        self.imbalance = ImbalanceDiagnostics(result)
+        self._results: List[DiagnosticResult] = []
+
+    def run_all(self, generate_plots: bool = False) -> List[DiagnosticResult]:
+        """
+        Run all diagnostics.
+
+        Args:
+            generate_plots: If True, generate matplotlib figures
+
+        Returns:
+            List of DiagnosticResult for each feature
+        """
+        self._results = []
+
+        # Only run diagnostics for enabled features
+        cfg = self.result.cfg
+
+        if cfg.arrivals.use_hawkes:
+            self._results.append(self.hawkes.analyze(generate_plots))
+
+        if cfg.spreads.use_lognormal:
+            self._results.append(self.spread.analyze(generate_plots))
+
+        if cfg.imbalance.use_ar1:
+            self._results.append(self.imbalance.analyze(generate_plots))
+
+        return self._results
+
+    @property
+    def all_passed(self) -> bool:
+        """True if all diagnostics passed."""
+        return all(r.passed for r in self._results)
+
+    @property
+    def all_warnings(self) -> List[str]:
+        """Collect all warnings from all diagnostics."""
+        warnings = []
+        for r in self._results:
+            warnings.extend(r.warnings)
+        return warnings
+
+    def summary(self) -> str:
+        """
+        Generate executive summary.
+
+        Returns:
+            One-paragraph summary of validation results
+        """
+        if not self._results:
+            return "No diagnostics run. Call run_all() first."
+
+        passed = [r.name for r in self._results if r.passed]
+        failed = [r.name for r in self._results if not r.passed]
+
+        parts = []
+
+        if passed:
+            parts.append(f"Validated: {', '.join(passed)}.")
+        if failed:
+            parts.append(f"Issues: {', '.join(failed)}.")
+
+        # Add key stats
+        for r in self._results:
+            if "acf_lag1" in r.stats:
+                parts.append(f"Hawkes ACF(1)={r.stats['acf_lag1']:.3f}.")
+            if "regime_ratio" in r.stats:
+                parts.append(f"Spread widening {r.stats['regime_ratio']:.1f}x.")
+            if "buy_frac_diff" in r.stats:
+                parts.append(f"Regime buy diff {r.stats['buy_frac_diff']:.1%}.")
+
+        return " ".join(parts)
+
+    def display(self):
+        """Display report in notebook."""
+        if not self._results:
+            self.run_all(generate_plots=True)
+
+        try:
+            from IPython.display import display, Markdown
+
+            lines = ["# Realistic Distributions Validation Report\n"]
+            lines.append(f"**Summary:** {self.summary()}\n")
+            lines.append("---\n")
+
+            for result in self._results:
+                icon = success_icon() if result.passed else warning_icon()
+                lines.append(f"## {icon} {result.name}\n")
+                lines.append(result.narrative + "\n")
+
+                if result.warnings:
+                    lines.append("**Warnings:**\n")
+                    for w in result.warnings:
+                        lines.append(f"- {w}\n")
+
+                lines.append("\n**Statistics:**\n")
+                for k, v in result.stats.items():
+                    if isinstance(v, float):
+                        lines.append(f"- {k}: {v:.4f}\n")
+                    else:
+                        lines.append(f"- {k}: {v}\n")
+
+                lines.append("---\n")
+
+            display(Markdown("".join(lines)))
+
+            # Display figures
+            for result in self._results:
+                for fig in result.figures:
+                    display(fig)
+
+        except ImportError:
+            print(self.summary())
+            for r in self._results:
+                print(f"\n{r.name}: {'PASS' if r.passed else 'WARN'}")
+                print(r.narrative)
+
+    def to_html(self, path: str):
+        """Export report to HTML file."""
+        import base64
+        from io import BytesIO
+
+        if not self._results:
+            self.run_all(generate_plots=True)
+
+        html_parts = [
+            "<!DOCTYPE html>",
+            "<html><head>",
+            "<title>Validation Report</title>",
+            "<style>body{font-family:sans-serif;max-width:900px;margin:auto;padding:20px;}</style>",
+            "</head><body>",
+            "<h1>Realistic Distributions Validation Report</h1>",
+            f"<p><strong>Summary:</strong> {self.summary()}</p>",
+        ]
+
+        for result in self._results:
+            icon = "PASS" if result.passed else "WARN"
+            html_parts.append(f"<h2>{icon} {result.name}</h2>")
+            html_parts.append(f"<p>{result.narrative}</p>")
+
+            # Embed figures as base64
+            for fig in result.figures:
+                buf = BytesIO()
+                fig.savefig(buf, format='png', dpi=100, bbox_inches='tight')
+                buf.seek(0)
+                img_b64 = base64.b64encode(buf.read()).decode()
+                html_parts.append(f'<img src="data:image/png;base64,{img_b64}" />')
+
+        html_parts.append("</body></html>")
+
+        with open(path, 'w') as f:
+            f.write("\n".join(html_parts))

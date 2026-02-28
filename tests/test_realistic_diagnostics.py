@@ -3,7 +3,7 @@ import pytest
 import numpy as np
 from rfq_simulator.config import SimConfig, ArrivalConfig, SpreadConfig, ImbalanceConfig
 from rfq_simulator.simulation import run_simulation
-from rfq_simulator.output.realistic_diagnostics import DiagnosticResult, HawkesDiagnostics, SpreadDiagnostics, ImbalanceDiagnostics
+from rfq_simulator.output.realistic_diagnostics import DiagnosticResult, HawkesDiagnostics, SpreadDiagnostics, ImbalanceDiagnostics, ValidationReport
 
 
 class TestDiagnosticResult:
@@ -149,3 +149,36 @@ class TestImbalanceDiagnostics:
         result = diag.analyze()
         # Stressed should have lower buy fraction (sell bias)
         assert result.stats["buy_frac_stressed"] < result.stats["buy_frac_calm"]
+
+
+class TestValidationReport:
+    @pytest.fixture
+    def full_result(self):
+        cfg = SimConfig(
+            T_days=30,
+            seed=42,
+            arrivals=ArrivalConfig(use_hawkes=True),
+            spreads=SpreadConfig(use_lognormal=True),
+            imbalance=ImbalanceConfig(use_ar1=True),
+        )
+        return run_simulation(cfg)
+
+    def test_validation_report_creation(self, full_result):
+        report = ValidationReport(full_result)
+        assert report is not None
+
+    def test_run_all_returns_three_results(self, full_result):
+        report = ValidationReport(full_result)
+        results = report.run_all()
+        assert len(results) == 3
+
+    def test_summary_not_empty(self, full_result):
+        report = ValidationReport(full_result)
+        report.run_all()
+        summary = report.summary()
+        assert len(summary) > 50
+
+    def test_all_passed_property(self, full_result):
+        report = ValidationReport(full_result)
+        report.run_all()
+        assert isinstance(report.all_passed, bool)
