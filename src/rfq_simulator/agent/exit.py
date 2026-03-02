@@ -23,6 +23,7 @@ import numpy as np
 
 from ..config import SimConfig
 from ..core.state import ExitMode
+from .lean import compute_urgency_factor
 
 
 @dataclass
@@ -223,18 +224,9 @@ def compute_urgency_adjusted_lean(
     Returns:
         Urgency-adjusted lean
     """
-    signal_expiry = t_signal + horizon_minutes
-    time_to_expiry = signal_expiry - current_minute
-    time_elapsed = current_minute - t_signal
-
-    if horizon_minutes <= 0:
-        return base_lean
-
-    # Urgency increases linearly from 1.0 to (1 + kappa_urgency)
-    urgency_factor = 1.0 + cfg.kappa_urgency * (time_elapsed / horizon_minutes)
-    urgency_factor = min(urgency_factor, 1.0 + cfg.kappa_urgency)  # Cap at max
-
-    return base_lean * urgency_factor
+    signal_age = current_minute - t_signal
+    urgency = compute_urgency_factor(signal_age, horizon_minutes, cfg)
+    return base_lean * urgency
 
 
 def estimate_time_to_unwind(

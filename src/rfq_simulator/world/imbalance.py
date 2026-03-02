@@ -20,7 +20,7 @@ from .regime import Regime
 
 
 class ImbalanceProcess:
-    """AR(1) flow imbalance process implementing StochasticProcess protocol."""
+    """AR(1) flow imbalance process with regime-dependent drift."""
 
     def __init__(self, cfg: ImbalanceConfig, rng: Generator, initial_regime: Regime = Regime.CALM):
         self._cfg = cfg

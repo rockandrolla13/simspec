@@ -19,7 +19,7 @@ import numpy as np
 from numpy.random import Generator
 
 from ..config import ArrivalConfig, SimConfig
-from .clock import TimeGrid
+from .clock import TimeGrid, compute_intraday_intensity
 
 
 @dataclass
@@ -30,7 +30,7 @@ class HawkesState:
 
 
 class HawkesProcess:
-    """Self-exciting point process implementing StochasticProcess protocol."""
+    """Self-exciting point process for Hawkes kernel state."""
 
     def __init__(self, cfg: ArrivalConfig, rng: Generator):
         self._alpha = cfg.hawkes_alpha
@@ -83,8 +83,6 @@ def generate_hawkes_arrivals(
     Returns:
         List of arrival times in minutes from simulation start
     """
-    from .rfq_stream import compute_intraday_intensity  # Avoid circular import
-
     time_grid = TimeGrid(cfg)
     total_minutes = cfg.total_minutes
     arrival_cfg = cfg.arrivals

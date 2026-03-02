@@ -8,7 +8,7 @@ Provides:
 """
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy as np
@@ -90,6 +90,23 @@ class BatchResult:
         return stats
 
 
+def _run_single_path(
+    cfg: SimConfig, seed: int, run_baseline_flag: bool
+) -> tuple:
+    """Run one MC path (strategy + optional baseline). Module-level for pickling."""
+    result = run_simulation(cfg, seed=seed, verbose=False)
+    bl_result = None
+    if run_baseline_flag:
+        bl_result = run_baseline(
+            prices=result.prices,
+            regime_path=result.regime_path,
+            cfg=cfg,
+            seed=seed,
+            verbose=False,
+        )
+    return result, bl_result
+
+
 def run_batch(
     cfg: SimConfig,
     n_paths: int = None,
@@ -122,8 +139,26 @@ def run_batch(
     baseline_results = [] if run_baseline_flag else None
 
     if parallel:
-        # Parallel execution (note: may not work well with all systems)
-        raise NotImplementedError("Parallel execution not yet implemented")
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(
+                    _run_single_path, cfg, seed, run_baseline_flag
+                ): i
+                for i, seed in enumerate(seeds)
+            }
+            for future in as_completed(futures):
+                idx = futures[future]
+                result, bl_result = future.result()
+                results.append((idx, result))
+                if run_baseline_flag:
+                    baseline_results.append((idx, bl_result))
+
+        # Sort by original index to maintain seed order
+        results.sort(key=lambda x: x[0])
+        results = [r for _, r in results]
+        if run_baseline_flag:
+            baseline_results.sort(key=lambda x: x[0])
+            baseline_results = [r for _, r in baseline_results]
     else:
         # Sequential execution
         for i, seed in enumerate(seeds):

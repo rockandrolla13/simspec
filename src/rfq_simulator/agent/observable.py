@@ -15,8 +15,18 @@ Their theoretical price is: theo = mid_obs + skew + lean
 import numpy as np
 from numpy.random import Generator
 
+from dataclasses import dataclass
+
 from ..config import SimConfig
 from ..world.clock import TimeGrid
+
+
+@dataclass
+class TheoResult:
+    """Result of theoretical price computation."""
+    theo: float
+    mid_obs: float
+    skew: float
 
 
 def compute_observable_mid(
@@ -143,7 +153,7 @@ def compute_theo_price(
     lean: float,
     cfg: SimConfig,
     rng: Generator,
-) -> tuple:
+) -> TheoResult:
     """
     Compute the trader's theoretical price.
 
@@ -160,18 +170,13 @@ def compute_theo_price(
         rng: Random generator
 
     Returns:
-        (theo_price, mid_obs, skew) tuple
+        TheoResult with theo, mid_obs, skew fields
     """
-    # Observable mid
     mid_obs = compute_observable_mid(prices, current_minute, time_grid, cfg, rng)
-
-    # Skew correction
     skew = compute_skew(prices, mid_obs, current_minute, time_grid, cfg, rng)
-
-    # Final theo
     theo = mid_obs + skew + lean
 
-    return theo, mid_obs, skew
+    return TheoResult(theo=theo, mid_obs=mid_obs, skew=skew)
 
 
 def compute_theo_error(

@@ -138,7 +138,7 @@ def compute_average_durations(cfg: SimConfig) -> Tuple[float, float]:
 
 
 class RegimeProcess:
-    """2-state Markov chain implementing StochasticProcess protocol."""
+    """2-state Markov chain for calm/stressed regime transitions."""
 
     def __init__(self, cfg: SimConfig, rng: Generator):
         self._cfg = cfg

@@ -23,7 +23,7 @@ import numpy as np
 from numpy.random import Generator
 
 from ..config import SimConfig
-from .clock import TimeGrid
+from .clock import TimeGrid, compute_intraday_intensity
 from .hawkes import generate_hawkes_arrivals
 from .imbalance import ImbalanceProcess
 from .regime import Regime
@@ -52,29 +52,6 @@ class RFQEvent:
     def direction(self) -> int:
         """Direction from trader's perspective: +1 if we buy, -1 if we sell."""
         return -1 if self.is_client_buy else +1
-
-
-def compute_intraday_intensity(hour: float, cfg: SimConfig) -> float:
-    """
-    Compute the intraday RFQ intensity multiplier.
-
-    Eq 10: f(h) = 1 + A_open * e^{-(h-h0)²/τ²} + A_close * e^{-(h-hc)²/τ²}
-
-    Args:
-        hour: Hour within the trading day (0 to trading_hours)
-        cfg: SimConfig with A_open, A_close, tau_f_hours, trading_hours
-
-    Returns:
-        Intensity multiplier >= 1.0
-    """
-    h0 = 0.0  # Market open
-    hc = cfg.trading_hours  # Market close
-    tau_sq = cfg.tau_f_hours ** 2
-
-    open_bump = cfg.A_open * np.exp(-(hour - h0) ** 2 / tau_sq)
-    close_bump = cfg.A_close * np.exp(-(hour - hc) ** 2 / tau_sq)
-
-    return 1.0 + open_bump + close_bump
 
 
 def generate_rfq_stream(

@@ -12,7 +12,7 @@ Agent module: Strategy logic that reacts to the market environment.
 
 from .alpha import AlphaSignalManager, AlphaSignal
 from .target import compute_target_position, compute_continuation_value
-from .observable import compute_observable_mid, compute_skew, compute_theo_price
+from .observable import compute_observable_mid, compute_skew, compute_theo_price, TheoResult
 from .lean import compute_lean, compute_lean_decomposition
 from .winrate import estimate_win_probability, generate_estimated_win_curve
 from .quoting import compute_optimal_quote, QuoteResult
@@ -25,6 +25,7 @@ __all__ = [
     "compute_observable_mid",
     "compute_skew",
     "compute_theo_price",
+    "TheoResult",
     "compute_lean",
     "compute_lean_decomposition",
     "estimate_win_probability",

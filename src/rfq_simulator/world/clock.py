@@ -11,6 +11,8 @@ This module provides consistent conversion between them.
 from dataclasses import dataclass
 from typing import Tuple
 
+import numpy as np
+
 from ..config import SimConfig
 
 
@@ -183,3 +185,26 @@ class TimeGrid:
     def is_valid_step(self, step: int) -> bool:
         """Check if step is within price path bounds."""
         return 0 <= step < self.total_steps
+
+
+def compute_intraday_intensity(hour: float, cfg: SimConfig) -> float:
+    """
+    Compute the intraday RFQ intensity multiplier.
+
+    Eq 10: f(h) = 1 + A_open * e^{-(h-h0)^2/tau^2} + A_close * e^{-(h-hc)^2/tau^2}
+
+    Args:
+        hour: Hour within the trading day (0 to trading_hours)
+        cfg: SimConfig with A_open, A_close, tau_f_hours, trading_hours
+
+    Returns:
+        Intensity multiplier >= 1.0
+    """
+    h0 = 0.0  # Market open
+    hc = cfg.trading_hours  # Market close
+    tau_sq = cfg.tau_f_hours ** 2
+
+    open_bump = cfg.A_open * np.exp(-(hour - h0) ** 2 / tau_sq)
+    close_bump = cfg.A_close * np.exp(-(hour - hc) ** 2 / tau_sq)
+
+    return 1.0 + open_bump + close_bump

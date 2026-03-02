@@ -192,7 +192,7 @@ def compute_street_lean_impact(
 
 
 class StreetLeanProcess:
-    """OU process for street lean implementing StochasticProcess protocol."""
+    """OU process for street lean dynamics."""
 
     def __init__(self, cfg: SimConfig, rng: Generator):
         self._cfg = cfg

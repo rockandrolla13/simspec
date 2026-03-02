@@ -88,6 +88,7 @@ class AlphaSignalManager:
         # Precompute refresh interval in minutes
         self.refresh_minutes = cfg.signal_refresh_hours * 60.0
         self.horizon_minutes = cfg.alpha_horizon_days * cfg.minutes_per_day
+        self._cached_sigma_alpha: Optional[float] = None
 
     def should_refresh(self, current_minute: float) -> bool:
         """
@@ -144,9 +145,10 @@ class AlphaSignalManager:
         # Perfect foresight alpha (Eq 4)
         alpha_star = prices[horizon_step] - prices[current_step]
 
-        # Compute σ_α from the path (std of forward returns at this horizon)
-        # Simplified: use the expected std based on daily vol
-        sigma_alpha = self._estimate_sigma_alpha(prices)
+        # Compute σ_α from the path (cached — path statistics don't change)
+        if self._cached_sigma_alpha is None:
+            self._cached_sigma_alpha = self._estimate_sigma_alpha(prices)
+        sigma_alpha = self._cached_sigma_alpha
 
         # Get effective IC for regime (Eq 7)
         ic = get_effective_ic(regime, self.cfg)

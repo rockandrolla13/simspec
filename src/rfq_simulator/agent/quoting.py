@@ -1,5 +1,5 @@
 """
-Optimal quoting: Grid search for the best markup.
+Optimal quoting: Scalar optimization for the best markup.
 
 Implements Eq 21-24 from spec:
     m* = argmax_m P̂(win|m) * [edge(m) + ΔV]
@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
+from scipy.optimize import minimize_scalar
 
 from ..config import SimConfig
 from ..world.rfq_stream import RFQEvent
@@ -50,25 +51,19 @@ class QuoteResult:
     decline_reason: Optional[str]
 
 
-def compute_edge(markup_bps: float, is_client_buy: bool) -> float:
+def compute_edge(markup_bps: float) -> float:
     """
     Compute edge earned at a given markup.
 
-    For offers (client buy): edge = +markup (higher price = more edge)
-    For bids (client sell): edge = +markup (with our convention that positive
-        markup means quoting "wider" i.e., lower bid = more edge for us)
-
-    Convention: positive markup always means we're earning more edge.
-    The quote formula handles the directional translation.
+    Convention: positive markup always means we're earning more edge,
+    regardless of direction. The quote formula handles directional translation.
 
     Args:
         markup_bps: Markup over theo in bps (positive = wider quote)
-        is_client_buy: True if client is buying
 
     Returns:
         Edge in bps (positive = we earn)
     """
-    # Positive markup = earning edge on both sides
     return markup_bps
 
 
@@ -159,7 +154,7 @@ def compute_objective(
     win_prob = estimate_win_probability(markup_bps, rfq, cfg)
 
     # Edge
-    edge_bps = compute_edge(markup_bps, rfq.is_client_buy)
+    edge_bps = compute_edge(markup_bps)
 
     # Inventory change
     delta_q = -rfq.size if rfq.is_client_buy else +rfq.size
@@ -191,9 +186,9 @@ def compute_optimal_quote(
     cfg: SimConfig,
 ) -> QuoteResult:
     """
-    Compute the optimal quote via grid search.
+    Compute the optimal quote via bounded scalar optimization.
 
-    Searches m ∈ [-m_max, +m_max] at m_grid resolution.
+    Maximizes P̂(win|m) × [edge(m) + ΔV] over the feasible markup range.
     Applies position and alpha bounds.
 
     Args:
@@ -220,39 +215,49 @@ def compute_optimal_quote(
             decline_reason="position_limit",
         )
 
-    # Build markup grid
-    markups = np.arange(-cfg.m_max_bps, cfg.m_max_bps + cfg.m_grid_bps, cfg.m_grid_bps)
-
-    # Inventory change for continuation value
+    # Inventory change for continuation value (constant w.r.t. markup)
     delta_q = -rfq.size if rfq.is_client_buy else +rfq.size
 
-    # Evaluate objective at each markup
-    best_markup = 0.0
-    best_objective = float("-inf")
-    best_win_prob = 0.0
-    best_edge = 0.0
-    best_delta_v = 0.0
+    # Compute ΔV once (independent of markup)
+    delta_v = compute_continuation_value(
+        alpha_remaining=alpha_remaining,
+        current_q=current_q,
+        target_q=target_q,
+        delta_q=delta_q,
+        cfg=cfg,
+    )
 
-    for m in markups:
-        obj, win_prob, edge, delta_v = compute_objective(
-            markup_bps=m,
-            rfq=rfq,
-            current_q=current_q,
-            target_q=target_q,
-            alpha_remaining=alpha_remaining,
-            cfg=cfg,
+    # Compute alpha-bound minimum markup
+    conversion = cfg.p0 * rfq.size * cfg.lot_size_mm * 10000 / 10000.0
+    if conversion > 0:
+        m_alpha_min = (-abs(alpha_remaining) * rfq.size - delta_v) / conversion
+    else:
+        m_alpha_min = -cfg.m_max_bps
+
+    # Feasible markup range
+    m_lo = max(-cfg.m_max_bps, m_alpha_min)
+    m_hi = cfg.m_max_bps
+
+    if m_lo >= m_hi:
+        # No feasible region
+        return QuoteResult(
+            quote_price=None, markup_bps=0.0, expected_value=0.0,
+            win_probability=0.0, edge_bps=0.0, continuation_value=0.0,
+            declined=True, decline_reason="alpha_bound",
         )
 
-        # Check alpha bound
-        if not check_alpha_bound(edge, delta_v, alpha_remaining, rfq.size, cfg):
-            continue
+    # Objective to maximize: P̂(win|m) × (edge_dollars + ΔV)
+    def neg_objective(m: float) -> float:
+        win_prob = estimate_win_probability(m, rfq, cfg)
+        edge_dollars = m / 10000.0 * cfg.p0 * rfq.size * cfg.lot_size_mm * 10000
+        return -(win_prob * (edge_dollars + delta_v))
 
-        if obj > best_objective:
-            best_objective = obj
-            best_markup = m
-            best_win_prob = win_prob
-            best_edge = edge
-            best_delta_v = delta_v
+    result = minimize_scalar(neg_objective, bounds=(m_lo, m_hi), method='bounded')
+    best_markup = result.x
+    best_objective = -result.fun
+    best_win_prob = estimate_win_probability(best_markup, rfq, cfg)
+    best_edge = compute_edge(best_markup)
+    best_delta_v = delta_v
 
     # Check if we found any feasible markup
     if best_objective == float("-inf"):
