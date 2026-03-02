@@ -157,13 +157,14 @@ def compute_realized_volatility(prices: np.ndarray, cfg: SimConfig) -> float:
     Returns:
         Daily volatility in bps
     """
-    log_returns = np.diff(np.log(prices))
+    # Use arithmetic returns to match ABM price process (Eq 1)
+    arithmetic_returns = np.diff(prices) / cfg.p0
 
     # Steps per day
     steps_per_day = cfg.n_steps_per_day
 
     # Daily return variance (sum of step variances)
-    daily_var = np.var(log_returns) * steps_per_day
+    daily_var = np.var(arithmetic_returns) * steps_per_day
 
     # Convert to bps
     daily_vol_bps = np.sqrt(daily_var) * 10000

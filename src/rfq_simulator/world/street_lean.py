@@ -174,34 +174,21 @@ def simulate_noisy_street_lean_observation(
 
 def compute_street_lean_impact(
     street_lean_bps: float,
-    is_client_buy: bool,
 ) -> float:
     """
     Compute how street lean affects competitor quotes.
 
     When street is long (positive lean), dealers quote lower to sell.
     When street is short (negative lean), dealers quote higher to buy.
+    The effect is symmetric: both bid and offer sides shift in the same direction.
 
     Args:
         street_lean_bps: Current street lean in bps
-        is_client_buy: True if client is buying (dealers offering)
 
     Returns:
         Adjustment to add to dealer quotes in bps
     """
-    # For client buy (dealer offers):
-    #   - Street long (positive lean): lower offers to reduce inventory
-    #   - Street short (negative lean): higher offers to build
-    # For client sell (dealer bids):
-    #   - Street long (positive lean): lower bids (less aggressive buying)
-    #   - Street short (negative lean): higher bids (more aggressive buying)
-
-    if is_client_buy:
-        # Offering side: positive lean = lower prices = negative adjustment
-        return -street_lean_bps * 0.5  # Partial pass-through
-    else:
-        # Bidding side: positive lean = lower prices = negative adjustment
-        return -street_lean_bps * 0.5
+    return -street_lean_bps * 0.5  # Partial pass-through
 
 
 class StreetLeanProcess:

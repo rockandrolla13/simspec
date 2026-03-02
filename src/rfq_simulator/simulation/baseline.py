@@ -162,8 +162,8 @@ def run_baseline(
         gap = abs(q - q_target)
         position_gaps.append(gap)
 
-        # Execute immediately if not at target
-        if q != q_target:
+        # Execute immediately if gap to target is at least 1 lot
+        if abs(q - q_target) >= 1.0:
             # Compute trade needed
             trade_size = q_target - q
 

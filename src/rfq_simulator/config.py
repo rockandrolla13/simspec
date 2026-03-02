@@ -369,15 +369,24 @@ class SimConfig:
 
     def validate(self) -> None:
         """Check parameter validity."""
-        assert self.T_days > 0, "T_days must be positive"
-        assert self.dt_minutes > 0, "dt_minutes must be positive"
-        assert 0 <= self.IC <= 1, "IC must be in [0, 1]"
-        assert 0 < self.IC_stress_mult <= 1, "IC_stress_mult must be in (0, 1]"
-        assert self.q_max > 0, "q_max must be positive"
-        assert -0.5 <= self.flow_bias <= 0.5, "flow_bias must be in [-0.5, 0.5]"
-        assert 0 <= self.skew_accuracy <= 1, "skew_accuracy must be in [0, 1]"
-        assert self.theta_limit > 0 and self.theta_limit < 1, "theta_limit must be in (0, 1)"
-        assert len(self.street_proxy_weights) == 3, "street_proxy_weights must have 3 elements"
+        if self.T_days <= 0:
+            raise ValueError("T_days must be positive")
+        if self.dt_minutes <= 0:
+            raise ValueError("dt_minutes must be positive")
+        if not (0 <= self.IC <= 1):
+            raise ValueError("IC must be in [0, 1]")
+        if not (0 < self.IC_stress_mult <= 1):
+            raise ValueError("IC_stress_mult must be in (0, 1]")
+        if self.q_max <= 0:
+            raise ValueError("q_max must be positive")
+        if not (-0.5 <= self.flow_bias <= 0.5):
+            raise ValueError("flow_bias must be in [-0.5, 0.5]")
+        if not (0 <= self.skew_accuracy <= 1):
+            raise ValueError("skew_accuracy must be in [0, 1]")
+        if not (0 < self.theta_limit < 1):
+            raise ValueError("theta_limit must be in (0, 1)")
+        if len(self.street_proxy_weights) != 3:
+            raise ValueError("street_proxy_weights must have 3 elements")
 
         # Hawkes branching ratio must be < 1 for stationarity
         if self.arrivals.use_hawkes:
