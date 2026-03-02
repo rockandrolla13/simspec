@@ -17,19 +17,12 @@ The transition point Δt_aggress is configurable (default: 8 hours = 1 day).
 """
 
 from dataclasses import dataclass
-from enum import Enum
 from typing import Optional, Tuple
 
 import numpy as np
 
 from ..config import SimConfig
-
-
-class ExitMode(Enum):
-    """Current exit mode."""
-
-    PATIENT = "patient"  # Normal RFQ-based trading
-    AGGRESSIVE = "aggressive"  # Time to unwind via crossing
+from ..core.state import ExitMode
 
 
 @dataclass

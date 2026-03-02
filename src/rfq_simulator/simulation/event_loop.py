@@ -23,7 +23,7 @@ from ..world.competitors import DealerPool, simulate_competition
 from ..world.street_lean import generate_street_lean_path, get_street_lean_at_step
 
 from ..agent.alpha import AlphaSignalManager
-from ..agent.exit import HybridExitManager, ExitMode
+from ..agent.exit import HybridExitManager
 from ..agent.target import compute_target_position
 from ..agent.observable import compute_observable_mid, compute_skew
 from ..agent.lean import compute_lean
@@ -203,7 +203,7 @@ def run_simulation(
             pnl_tracker.record_carry(state.q, days=1.0)
 
             # Reset exit manager for new signal if applicable
-            if state.t_signal is not None and alpha_manager.should_refresh(current_minute):
+            if alpha_manager.current_signal is not None and alpha_manager.should_refresh(current_minute):
                 exit_manager.reset()
 
         # Update regime
@@ -318,6 +318,7 @@ def run_simulation(
                 best_comp=None,
                 spread_pnl=0.0,
                 adverse=0.0,
+                q_before=state.q,
             )
             state.rfq_log.append(log_entry)
             continue
@@ -364,6 +365,9 @@ def run_simulation(
             )
             state.record_spread_pnl(spread_pnl)
 
+            # Capture position before mutation
+            q_before = state.q
+
             # Update position
             state.update_position(delta_q, quote_result.quote_price, rfq.size)
 
@@ -393,6 +397,7 @@ def run_simulation(
                 best_comp=competition.best_competitor_price,
                 spread_pnl=spread_pnl,
                 adverse=adverse_move,
+                q_before=q_before,
             )
             state.rfq_log.append(log_entry)
 
@@ -412,6 +417,7 @@ def run_simulation(
                 best_comp=competition.best_competitor_price,
                 spread_pnl=0.0,
                 adverse=0.0,
+                q_before=state.q,
             )
             state.rfq_log.append(log_entry)
 
@@ -464,6 +470,7 @@ def _create_rfq_log(
     best_comp: Optional[float],
     spread_pnl: float,
     adverse: float,
+    q_before: float,
 ) -> RFQLog:
     """Create an RFQ log entry."""
     return RFQLog(
@@ -477,7 +484,7 @@ def _create_rfq_log(
         skew=skew,
         lean=lean,
         theo=theo,
-        q_before=state.q - ((-1 if rfq.is_client_buy else 1) * rfq.size if filled else 0),
+        q_before=q_before,
         q_target=state.q_target,
         alpha_remaining=state.alpha_remaining,
         quote_price=quote_result.quote_price,

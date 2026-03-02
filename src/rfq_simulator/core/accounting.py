@@ -56,13 +56,16 @@ class PnLDecomposition:
     lot_size_mm: float = 1.0
     """Lot size for normalization."""
 
+    p0: float = 100.0
+    """Reference price (per $100 face) for bps conversion."""
+
     @property
     def total_pnl_bps(self) -> float:
-        """Total P&L in bps of notional."""
-        if self.lot_size_mm <= 0:
+        """Total P&L in bps of one-lot notional at p0."""
+        notional = self.p0 * self.lot_size_mm * 10000  # dollar value of 1 lot
+        if notional <= 0:
             return 0.0
-        # Assuming $1MM notional per lot, 10000 bps
-        return self.total_pnl / (self.lot_size_mm * 10000) * 10000
+        return self.total_pnl / notional * 10000
 
     def to_dict(self) -> dict:
         """Export as dictionary."""
@@ -248,6 +251,7 @@ class PnLTracker:
             hedge_pnl=self.hedge_pnl,
             aggress_cost=self.aggress_cost,
             lot_size_mm=self.cfg.lot_size_mm,
+            p0=self.cfg.p0,
         )
 
     def get_time_series(self) -> dict:
