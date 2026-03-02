@@ -624,8 +624,8 @@ class StreetLeanDiagnostics:
         # For OU: ACF(1) ≈ exp(-θ * dt)
         # So θ ≈ -log(ACF(1)) / dt
         try:
-            from statsmodels.tsa.stattools import acf
-            acf_vals = acf(self._street_lean_path, nlags=1)
+            # Use manual ACF computation (statsmodels has compatibility issues)
+            acf_vals = self._compute_acf_manual(self._street_lean_path, max_lag=1)
             acf1 = acf_vals[1]
             if acf1 > 0:
                 dt = self.cfg.dt_minutes / self.cfg.minutes_per_day
@@ -640,6 +640,24 @@ class StreetLeanDiagnostics:
         if theta <= 0:
             return np.inf
         return np.log(2) / theta
+
+    def _compute_acf_manual(self, x: np.ndarray, max_lag: int) -> np.ndarray:
+        """Compute autocorrelation function manually using numpy.
+
+        Uses the standard formula: ACF(k) = cov(X_t, X_{t+k}) / var(X)
+        """
+        x = np.asarray(x)
+        n = len(x)
+        x_centered = x - np.mean(x)
+        var = np.var(x)
+        if var == 0:
+            return np.zeros(max_lag + 1)
+
+        acf_vals = np.zeros(max_lag + 1)
+        acf_vals[0] = 1.0  # ACF(0) = 1 by definition
+        for k in range(1, max_lag + 1):
+            acf_vals[k] = np.mean(x_centered[:-k] * x_centered[k:]) / var
+        return acf_vals
 
     def _generate_plots(self) -> list:
         """Generate street lean diagnostic plots."""
@@ -692,10 +710,13 @@ class StreetLeanDiagnostics:
         # Plot 3: ACF showing mean reversion
         fig, ax = plt.subplots(figsize=(8, 4))
         try:
-            from statsmodels.tsa.stattools import acf
             # Subsample for speed
             subsample = self._street_lean_path[::10] if len(self._street_lean_path) > 1000 else self._street_lean_path
-            acf_vals = acf(subsample, nlags=50)
+
+            # Compute ACF manually (fallback for statsmodels compatibility issues)
+            max_lag = min(50, len(subsample) - 1)
+            acf_vals = self._compute_acf_manual(subsample, max_lag)
+
             lags = np.arange(len(acf_vals))
             ax.bar(lags, acf_vals, alpha=0.7)
             # Theoretical OU ACF
@@ -707,8 +728,8 @@ class StreetLeanDiagnostics:
             ax.set_title('Autocorrelation (Mean Reversion Signature)')
             ax.legend()
             ax.grid(True, alpha=0.3)
-        except Exception:
-            ax.text(0.5, 0.5, 'ACF computation failed', ha='center', va='center', transform=ax.transAxes)
+        except Exception as e:
+            ax.text(0.5, 0.5, f'ACF computation failed: {e}', ha='center', va='center', transform=ax.transAxes)
         plt.tight_layout()
         figures.append(fig)
 
